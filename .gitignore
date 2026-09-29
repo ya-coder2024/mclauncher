@@ -5,7 +5,6 @@
 _pydeps/
 build/
 dist/
-*.exe
 *.manifest
 
 # ===== Python 缓存 =====

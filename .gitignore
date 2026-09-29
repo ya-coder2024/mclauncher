@@ -1,0 +1,20 @@
+# ===== 游戏运行数据（体积大，不入库）=====
+.minecraft/
+
+# ===== Python 打包依赖与产物 =====
+_pydeps/
+build/
+dist/
+*.exe
+*.manifest
+
+# ===== Python 缓存 =====
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ===== 临时/本地文件 =====
+*.log
+*.tmp
+_pytest_cache/

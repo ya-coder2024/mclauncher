@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
 from ui import theme
 from ui.pages.home_page import HomePage
 from ui.pages.download_page import DownloadPage
+from ui.pages.mods_page import ModsPage
 from ui.pages.settings_page import SettingsPage
 
 
@@ -130,6 +131,7 @@ class MainWindow(QMainWindow):
         nav_defs = [
             ("主页", "home", HomePage),
             ("下载", "download", DownloadPage),
+            ("模组", "mods", ModsPage),
             ("设置", "settings", SettingsPage),
         ]
         for i, (text, icon_name, page_cls) in enumerate(nav_defs):
@@ -140,6 +142,13 @@ class MainWindow(QMainWindow):
             self.pages.addWidget(page_cls())
 
         side_layout.addStretch()
+
+        # 模组安装后自动刷新主页的模组列表
+        home_page = next(self.pages.widget(i) for i in range(self.pages.count())
+                         if isinstance(self.pages.widget(i), HomePage))
+        mods_page = next(self.pages.widget(i) for i in range(self.pages.count())
+                         if isinstance(self.pages.widget(i), ModsPage))
+        mods_page.installed_changed.connect(home_page.refresh_versions)
 
         # 侧边栏底部版本号
         ver = QLabel("PCL 风格 v0.1", objectName="versionTag")

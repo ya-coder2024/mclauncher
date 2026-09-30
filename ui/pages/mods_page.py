@@ -1,10 +1,7 @@
 # -*- coding: utf-8 -*-
-"""模组下载页：从 Modrinth 搜索任意模组 → 选择版本 → 下载到 mods 目录。
-
-特性：
-- 按关键字随意搜索，支持加载器（Fabric/Forge/Quilt/NeoForge）与游戏版本筛选
-- 多版本时弹窗选择
-- 自动解析并下载必需依赖（如 Fabric API）
+"""模组页（双标签）：
+- 下载模组：从 Modrinth 搜索任意模组 → 选择版本 → 下载到 mods 目录
+- 已安装：查看、启用/禁用（.jar.disabled）、删除本地模组
 """
 
 import re
@@ -14,11 +11,13 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QListWidget, QListWidgetItem, QProgressBar, QComboBox, QDialog,
+    QTabWidget, QMessageBox,
 )
 
 from ui import theme
 from core.config import GAME_DIR
 from core import mod_repo
+from core import launcher as launcher_core
 from core.downloader import download_file
 
 _LOADER_TABS = [("全部", None), ("Fabric", "fabric"), ("Forge", "forge"),
@@ -158,10 +157,9 @@ class VersionPickDialog(QDialog):
         return self._versions[r] if r >= 0 else None
 
 
-# ---------------- 模组下载页 ----------------
-class ModsPage(QWidget):
-    # 模组安装完成后发出（主页据此刷新模组列表）
-    installed_changed = pyqtSignal()
+# ---------------- 下载模组 Tab ----------------
+class DownloadTab(QWidget):
+    changed = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -173,10 +171,8 @@ class ModsPage(QWidget):
         self._installer = None
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(28, 24, 28, 24)
+        root.setContentsMargins(0, 12, 0, 0)
         root.setSpacing(12)
-
-        root.addWidget(QLabel("模组下载", objectName="pageTitle"))
 
         # ---- 筛选行 ----
         row = QHBoxLayout()
@@ -211,7 +207,7 @@ class ModsPage(QWidget):
         self.list.itemDoubleClicked.connect(self._start_install)
         root.addWidget(self.list, 1)
 
-        # ---- 底部：翻页 + 进度 + 状态 + 安装 ----
+        # ---- 底部 ----
         bottom = QHBoxLayout()
         bottom.setSpacing(10)
         self.btn_prev = QPushButton("上一页", objectName="small")
@@ -360,7 +356,6 @@ class ModsPage(QWidget):
     def _on_versions(self, versions, hit):
         self._version_thread = None
         if not versions:
-            # 放宽条件再试一次（不带版本/加载器过滤）
             self.status_label.setText("当前筛选下无版本，正在尝试获取全部版本…")
             self._version_thread = VersionLoadThread(hit["project_id"], None, None)
             self._version_thread.done.connect(self._pick_or_warn)
@@ -407,7 +402,7 @@ class ModsPage(QWidget):
                                       + "（已含必需依赖）")
         else:
             self.status_label.setText("所选文件此前已安装，无需重复下载")
-        self.installed_changed.emit()
+        self.changed.emit()
 
     def _on_install_failed(self, err):
         self._installer = None
@@ -415,6 +410,175 @@ class ModsPage(QWidget):
         self.progress.hide()
         self.status_label.setText(f"安装失败：{err}")
 
-    def showEvent(self, e):
-        super().showEvent(e)
-        self._fill_mc_versions()
+
+# ---------------- 已安装 Tab ----------------
+class _ScanThread(QThread):
+    done = pyqtSignal(list)
+    failed = pyqtSignal(str)
+
+    def run(self):
+        try:
+            self.done.emit(launcher_core.scan_mods(GAME_DIR))
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
+class InstalledTab(QWidget):
+    changed = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self._scan = None
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 12, 0, 0)
+        root.setSpacing(10)
+
+        tip = QLabel("管理 .minecraft/mods 中的模组。禁用后加载器不会加载该模组（重启游戏生效）。",
+                     objectName="cardDesc")
+        tip.setWordWrap(True)
+        root.addWidget(tip)
+
+        self.list = QListWidget(objectName="versionList")
+        root.addWidget(self.list, 1)
+
+        bottom = QHBoxLayout()
+        bottom.setSpacing(8)
+        self.status_label = QLabel("", objectName="cardDesc")
+        bottom.addWidget(self.status_label, 1)
+
+        self.btn_toggle = QPushButton("启用 / 禁用所选", objectName="small")
+        self.btn_toggle.clicked.connect(self._toggle_selected)
+        bottom.addWidget(self.btn_toggle)
+        self.btn_delete = QPushButton("删除所选", objectName="small")
+        self.btn_delete.clicked.connect(self._delete_selected)
+        bottom.addWidget(self.btn_delete)
+        self.btn_refresh = QPushButton("刷新", objectName="small")
+        self.btn_refresh.clicked.connect(self.refresh)
+        bottom.addWidget(self.btn_refresh)
+        root.addLayout(bottom)
+
+    def refresh(self):
+        if self._scan is not None:
+            return
+        self.status_label.setText("正在扫描…")
+        self._scan = _ScanThread()
+        self._scan.done.connect(self._on_scanned)
+        self._scan.failed.connect(self._on_scan_failed)
+        self._scan.start()
+
+    def _on_scanned(self, mods):
+        self._scan = None
+        self.list.clear()
+        enabled_n = 0
+        for m in mods:
+            state = "已禁用" if m["disabled"] else "已启用"
+            if not m["disabled"]:
+                enabled_n += 1
+            item = QListWidgetItem()
+            item.setData(Qt.UserRole, m)
+            row = self._make_row(m, state)
+            item.setSizeHint(row.sizeHint())
+            self.list.addItem(item)
+            self.list.setItemWidget(item, row)
+        self.status_label.setText(
+            f"共 {len(mods)} 个模组（启用 {enabled_n}，禁用 {len(mods) - enabled_n}）"
+            if mods else "mods 目录为空，去「下载模组」页安装吧")
+
+    def _on_scan_failed(self, err):
+        self._scan = None
+        self.status_label.setText(f"扫描失败：{err}")
+
+    def _make_row(self, m, state):
+        w = QWidget()
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setSpacing(10)
+
+        icon_label = QLabel()
+        color = theme.COLORS["text_dim"] if m["disabled"] else theme.COLORS["accent"]
+        icon_label.setPixmap(theme.icon("mods", color=color).pixmap(22, 22))
+        lay.addWidget(icon_label)
+
+        name = QLabel(m["name"], objectName="cardTitle")
+        name.setFixedWidth(200)
+        lay.addWidget(name)
+
+        ver = QLabel(f"版本 {m['version']}", objectName="cardDesc")
+        ver.setMinimumWidth(180)
+        lay.addWidget(ver)
+        lay.addStretch()
+
+        st = QLabel(state, objectName="cardDesc")
+        st.setFixedWidth(70)
+        st.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        lay.addWidget(st)
+        return w
+
+    def _selected_mod(self):
+        items = self.list.selectedItems()
+        return items[0].data(Qt.UserRole) if items else None
+
+    def _toggle_selected(self):
+        m = self._selected_mod()
+        if not m:
+            self.status_label.setText("请先选择一个模组")
+            return
+        try:
+            launcher_core.set_mod_enabled(GAME_DIR, m["file"], m["disabled"])
+        except Exception as e:
+            self.status_label.setText(f"操作失败：{e}")
+            return
+        self.status_label.setText(
+            f"已启用 {m['name']}（重启游戏生效）" if m["disabled"]
+            else f"已禁用 {m['name']}（重启游戏生效）")
+        self.changed.emit()
+        self.refresh()
+
+    def _delete_selected(self):
+        m = self._selected_mod()
+        if not m:
+            self.status_label.setText("请先选择一个模组")
+            return
+        ok = QMessageBox.question(
+            self, "删除模组", f"确定删除「{m['name']}」吗？此操作不可恢复。",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ok != QMessageBox.Yes:
+            return
+        try:
+            launcher_core.delete_mod(GAME_DIR, m["file"])
+        except Exception as e:
+            self.status_label.setText(f"删除失败：{e}")
+            return
+        self.status_label.setText(f"已删除 {m['name']}")
+        self.changed.emit()
+        self.refresh()
+
+
+# ---------------- 模组页（外壳） ----------------
+class ModsPage(QWidget):
+    # 模组安装/删除/启停后发出（主页据此刷新版本与模组列表）
+    installed_changed = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        root = QVBoxLayout(self)
+        root.setContentsMargins(28, 24, 28, 24)
+        root.setSpacing(12)
+
+        root.addWidget(QLabel("模组", objectName="pageTitle"))
+
+        self.tabs = QTabWidget()
+        self.tab_download = DownloadTab()
+        self.tab_installed = InstalledTab()
+        self.tabs.addTab(self.tab_download, "下载模组")
+        self.tabs.addTab(self.tab_installed, "已安装")
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        root.addWidget(self.tabs, 1)
+
+        self.tab_download.changed.connect(self.installed_changed.emit)
+        self.tab_installed.changed.connect(self.installed_changed.emit)
+
+    def _on_tab_changed(self, idx):
+        if self.tabs.widget(idx) is self.tab_installed:
+            self.tab_installed.refresh()

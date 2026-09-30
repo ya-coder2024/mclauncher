@@ -172,19 +172,30 @@ def ensure_client(data, game_dir, vid, use_mirror=True, cancel=None):
     return dest
 
 
-def scan_mods(game_dir):
+def scan_mods(game_dir, include_disabled=True):
     """扫描 .minecraft/mods 目录，返回模组信息列表。
 
-    每个元素：{"name": 模组名, "version": 版本, "file": 文件名}
-    优先解析 fabric.mod.json（Fabric），其次 mcmod.info（旧 Forge），
-    再其次 META-INF/mods.toml（新 Forge）；解析不到则用文件名。
+    每个元素：{"name", "version", "file", "id", "disabled"}
+    - .jar 为启用；.jar.disabled 为禁用（include_disabled=False 时不列出）
+    - 优先解析 fabric.mod.json（Fabric），其次 mcmod.info（旧 Forge），
+      再其次 META-INF/mods.toml（新 Forge）；解析不到则用文件名。
     """
     mods_dir = Path(game_dir) / "mods"
     result = []
     if not mods_dir.is_dir():
         return result
-    for jar in sorted(mods_dir.glob("*.jar")):
-        info = {"name": jar.stem, "version": "?", "file": jar.name}
+    files = sorted(mods_dir.glob("*.jar"))
+    if include_disabled:
+        files += sorted(mods_dir.glob("*.jar.disabled"))
+    for jar in files:
+        disabled = jar.suffix == ".disabled"
+        info = {"name": jar.name.replace(".disabled", ""),
+                "version": "?", "file": jar.name, "id": "",
+                "disabled": disabled}
+        if disabled:
+            info["name"] = Path(jar.name.replace(".disabled", "")).stem
+        else:
+            info["name"] = jar.stem
         try:
             with zipfile.ZipFile(jar) as z:
                 names = z.namelist()
@@ -193,6 +204,7 @@ def scan_mods(game_dir):
                         m = json.loads(z.read("fabric.mod.json").decode("utf-8"))
                         info["name"] = m.get("name") or info["name"]
                         info["version"] = m.get("version") or "?"
+                        info["id"] = m.get("id") or ""
                     except Exception:
                         pass
                 elif "mcmod.info" in names:
@@ -204,6 +216,7 @@ def scan_mods(game_dir):
                             m = json.loads(raw)
                         info["name"] = m.get("name") or info["name"]
                         info["version"] = m.get("version") or "?"
+                        info["id"] = m.get("modid") or ""
                     except Exception:
                         pass
                 else:
@@ -214,6 +227,7 @@ def scan_mods(game_dir):
                                 for line in txt.splitlines():
                                     if line.strip().startswith('modId=') or line.strip().startswith('modId ='):
                                         info["name"] = line.split('=', 1)[1].strip().strip('"')
+                                        info["id"] = info["name"]
                                     elif line.strip().startswith('version=') or line.strip().startswith('version ='):
                                         info["version"] = line.split('=', 1)[1].strip().strip('"')
                             except Exception:
@@ -223,6 +237,35 @@ def scan_mods(game_dir):
             pass  # 损坏的 jar 直接用文件名
         result.append(info)
     return result
+
+
+def set_mod_enabled(game_dir, file_name, enabled):
+    """启用/禁用模组：.jar <-> .jar.disabled，返回新文件名"""
+    mods_dir = Path(game_dir) / "mods"
+    src = mods_dir / file_name
+    if enabled:
+        if file_name.endswith(".disabled"):
+            dest = mods_dir / file_name[:-len(".disabled")]
+        else:
+            return file_name
+    else:
+        if file_name.endswith(".disabled"):
+            return file_name
+        dest = mods_dir / (file_name + ".disabled")
+    if not src.is_file():
+        raise FileNotFoundError(file_name)
+    if dest.exists():
+        raise FileExistsError(dest.name)
+    src.rename(dest)
+    return dest.name
+
+
+def delete_mod(game_dir, file_name):
+    """删除一个模组文件"""
+    p = Path(game_dir) / "mods" / file_name
+    if not p.is_file():
+        raise FileNotFoundError(file_name)
+    p.unlink()
 
 
 def ensure_mods_dir(game_dir):

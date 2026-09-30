@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
 from core.config import GAME_DIR
 from core.version_manifest import fetch_manifest
 from core.download_manager import DownloadManager
+from core import loader_install
 
 _TYPE_NAMES = {
     "release": "正式版",
@@ -33,12 +34,34 @@ class ManifestLoader(QThread):
             self.failed.emit(str(e))
 
 
+class FabricInstallThread(QThread):
+    """后台一键安装 Fabric"""
+    status = pyqtSignal(str)
+    installed = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, mc_version):
+        super().__init__()
+        self._mc = mc_version
+
+    def run(self):
+        try:
+            new_id = loader_install.install_fabric(
+                GAME_DIR, self._mc, status_cb=self.status.emit)
+            self.installed.emit(new_id)
+        except loader_install.LoaderError as e:
+            self.failed.emit(str(e))
+        except Exception as e:
+            self.failed.emit(f"安装出错：{e}")
+
+
 class DownloadPage(QWidget):
     def __init__(self):
         super().__init__()
         self._versions = []
         self._version_type = None
         self._downloader = None
+        self._fabric_installer = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 24, 28, 24)
@@ -85,6 +108,10 @@ class DownloadPage(QWidget):
         self.btn_download.setEnabled(False)
         self.btn_download.clicked.connect(self._start_download)
         bottom.addWidget(self.btn_download)
+        self.btn_fabric = QPushButton("为此版本安装 Fabric", objectName="small")
+        self.btn_fabric.setEnabled(False)
+        self.btn_fabric.clicked.connect(self._install_fabric)
+        bottom.addWidget(self.btn_fabric)
         root.addLayout(bottom)
 
         self.list.itemSelectionChanged.connect(self._on_select)
@@ -148,7 +175,34 @@ class DownloadPage(QWidget):
         return w
 
     def _on_select(self):
-        self.btn_download.setEnabled(bool(self.list.selectedItems()))
+        has = bool(self.list.selectedItems())
+        self.btn_download.setEnabled(has)
+        self.btn_fabric.setEnabled(has and self._fabric_installer is None)
+
+    # ---------- 一键安装 Fabric ----------
+    def _install_fabric(self):
+        items = self.list.selectedItems()
+        if not items or self._fabric_installer is not None:
+            return
+        mc = items[0].data(Qt.UserRole)["id"]
+        self.btn_fabric.setEnabled(False)
+        self.status_label.setText(f"正在为 {mc} 安装 Fabric…")
+        self._fabric_installer = FabricInstallThread(mc)
+        self._fabric_installer.status.connect(self.status_label.setText)
+        self._fabric_installer.installed.connect(self._on_fabric_done)
+        self._fabric_installer.failed.connect(self._on_fabric_fail)
+        self._fabric_installer.start()
+
+    def _on_fabric_done(self, new_id):
+        self._fabric_installer = None
+        self.status_label.setText(
+            f"Fabric 安装完成：{new_id} —— 回主页即可选择该版本启动")
+        self.btn_fabric.setEnabled(True)
+
+    def _on_fabric_fail(self, err):
+        self._fabric_installer = None
+        self.status_label.setText(f"Fabric 安装失败：{err}")
+        self.btn_fabric.setEnabled(True)
 
     # ---------- 下载 ----------
     def _start_download(self):

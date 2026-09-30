@@ -234,7 +234,7 @@ class HomePage(QWidget):
             try:
                 data = json.loads(jp.read_text(encoding="utf-8"))
                 jv = data.get("javaVersion", {})
-                mods = scan_mods(GAME_DIR)
+                mods = scan_mods(GAME_DIR, include_disabled=False)
                 mod_line = ""
                 if mods:
                     names = "、".join(m["name"] for m in mods[:6])

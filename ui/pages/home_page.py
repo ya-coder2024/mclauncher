@@ -11,10 +11,14 @@ from PyQt5.QtWidgets import (
 )
 
 from ui import theme
+from ui.account_dialog import AccountDialog
 from core.config import GAME_DIR
 from core.version_manifest import fetch_manifest
 from core.download_manager import DownloadManager
+from core.auth import AccountStore
 from core.launcher import LaunchWorker, scan_mods
+
+_TYPE_LABEL = {"offline": "离线", "yggdrasil": "外置", "microsoft": "正版"}
 
 # 顶部卡片：图标 / 标题 / 描述
 _TOP_CARDS = [
@@ -52,6 +56,7 @@ class HomePage(QWidget):
         self._downloader = None        # 下载线程
         self._worker = None            # 启动线程
         self._local_versions = []
+        self.account_store = AccountStore(GAME_DIR)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -79,6 +84,7 @@ class HomePage(QWidget):
         page.addStretch()
 
         self.refresh_versions()
+        self._refresh_account_label()
 
     # ---------- 构建小卡片 ----------
     def _make_small_card(self, icon_name, title, desc):
@@ -114,9 +120,20 @@ class HomePage(QWidget):
         h.setContentsMargins(24, 24, 24, 24)
         h.setSpacing(24)
 
-        # 左侧：版本选择 + 状态 + 启动按钮
+        # 左侧：账号 + 版本选择 + 状态 + 启动按钮
         left = QVBoxLayout()
         left.setSpacing(10)
+
+        # 账号行
+        left.addWidget(QLabel("游戏账号", objectName="cardTitle"))
+        acct_row = QHBoxLayout()
+        acct_row.setSpacing(8)
+        self.account_label = QLabel("未登录（默认离线）", objectName="cardDesc")
+        acct_row.addWidget(self.account_label, 1)
+        self.btn_account = QPushButton("添加 / 切换", objectName="small")
+        self.btn_account.clicked.connect(self._open_account_dialog)
+        acct_row.addWidget(self.btn_account)
+        left.addLayout(acct_row)
 
         left.addWidget(QLabel("选择版本", objectName="cardTitle"))
 
@@ -238,6 +255,25 @@ class HomePage(QWidget):
             f"{text}\n\n该版本尚未下载。\n点击启动将自动完成下载、\n依赖补全与 Java 运行时安装。"
         )
 
+    # ---------- 账号 ----------
+    def _open_account_dialog(self):
+        dlg = AccountDialog(self)
+        dlg.logged_in.connect(self._on_account_logged_in)
+        dlg.exec_()
+
+    def _on_account_logged_in(self, account):
+        self.account_store.add(account)
+        self._refresh_account_label()
+
+    def _refresh_account_label(self):
+        a = self.account_store.current()
+        if a:
+            self.account_label.setText(
+                f"{a['name']}（{_TYPE_LABEL.get(a['type'], a['type'])}）"
+            )
+        else:
+            self.account_label.setText("未登录（默认离线）")
+
     # ---------- 启动流程 ----------
     def _on_launch(self):
         vid = self.version_box.currentText()
@@ -257,7 +293,8 @@ class HomePage(QWidget):
         self.launch_status.setText(f"正在准备启动 {vid}…")
         self.launch_progress.show()
         self.launch_progress.setValue(0)
-        self._worker = LaunchWorker(GAME_DIR, vid)
+        self._worker = LaunchWorker(GAME_DIR, vid,
+                                    account=self.account_store.current())
         self._worker.status.connect(self.launch_status.setText)
         self._worker.progress.connect(self.launch_progress.setValue)
         self._worker.launched.connect(self._on_launched)

@@ -279,17 +279,25 @@ def offline_uuid(name):
 
 # ---------- 命令组装 ----------
 
-def build_command(data, game_dir, vid, java_exe, classpath, username="Player", memory="2G"):
+def build_command(data, game_dir, vid, java_exe, classpath, account=None, memory="2G"):
+    """组装启动命令。account：来自 core.auth 的账号字典。"""
+    account = account or {"type": "offline", "name": "Player",
+                          "uuid": offline_uuid("Player"), "access_token": "0"}
+    username = account["name"]
+    player_uuid = account["uuid"]
+    access_token = account["access_token"]
+    # 现代版本统一用 msa；离线保持 legacy
+    user_type = "legacy" if account["type"] == "offline" else "msa"
+
     natives_dir = Path(game_dir) / "versions" / vid / "natives"
-    token = offline_uuid(username)
     subs = {
         "auth_player_name": username,
-        "auth_uuid": token,
-        "auth_access_token": token,
+        "auth_uuid": player_uuid,
+        "auth_access_token": access_token,
         "auth_xuid": "0",
-        "auth_session": f"player:{token}",
+        "auth_session": f"token:{access_token}:{player_uuid}",
         "clientid": "0",
-        "user_type": "legacy",
+        "user_type": user_type,
         "user_properties": "{}",
         "version_name": vid,
         "version_type": data.get("type", "release"),
@@ -345,10 +353,11 @@ def build_command(data, game_dir, vid, java_exe, classpath, username="Player", m
 
 # ---------- 一键启动 ----------
 
-def launch(game_dir, vid, username="Player", use_mirror=True, java_path=None,
+def launch(game_dir, vid, account=None, use_mirror=True, java_path=None,
            memory="2G", status_cb=None, progress_cb=None, cancel=None):
     """同步执行启动全流程，返回 Popen 进程对象。
 
+    account：core.auth 的账号字典；为空时使用默认离线账号。
     progress_cb(percent)：0-100 整体进度
     """
     game_dir = Path(game_dir)
@@ -363,6 +372,16 @@ def launch(game_dir, vid, username="Player", use_mirror=True, java_path=None,
             if total and progress_cb:
                 progress_cb(int(lo + (hi - lo) * done / total))
         return cb
+
+    # 账号：默认离线；正版/外置在此自动刷新令牌
+    from core import auth as auth_mod
+    if account is None:
+        account = auth_mod.offline_login("Player")
+    say(f"账号：{account['name']}（"
+        + {"offline": "离线", "microsoft": "正版", "yggdrasil": "外置"}.get(account["type"], account["type"])
+        + "）")
+    if account["type"] != "offline":
+        account = auth_mod.prepare_account(account)
 
     # 版本 json 缺失时自动从清单获取
     json_path = vdir / f"{vid}.json"
@@ -415,7 +434,7 @@ def launch(game_dir, vid, username="Player", use_mirror=True, java_path=None,
 
     ensure_mods_dir(game_dir)  # 确保 mods 目录存在，供 Fabric/Forge 加载器扫描
 
-    cmd = build_command(data, game_dir, vid, java_exe, cp, username, memory)
+    cmd = build_command(data, game_dir, vid, java_exe, cp, account, memory)
     say("正在启动游戏…")
     log = open(vdir / "launcher-log.txt", "ab")
     proc = subprocess.Popen(cmd, cwd=str(game_dir), stdout=log, stderr=subprocess.STDOUT)
@@ -431,12 +450,12 @@ class LaunchWorker(QThread):
     launched = pyqtSignal(int)   # 游戏进程 PID
     failed = pyqtSignal(str)
 
-    def __init__(self, game_dir, vid, username="Player", use_mirror=True,
+    def __init__(self, game_dir, vid, account=None, use_mirror=True,
                  java_path=None, memory="2G"):
         super().__init__()
         self.game_dir = game_dir
         self.vid = vid
-        self.username = username
+        self.account = account
         self.use_mirror = use_mirror
         self.java_path = java_path
         self.memory = memory
@@ -449,7 +468,7 @@ class LaunchWorker(QThread):
         try:
             proc = launch(
                 self.game_dir, self.vid,
-                username=self.username, use_mirror=self.use_mirror,
+                account=self.account, use_mirror=self.use_mirror,
                 java_path=self.java_path, memory=self.memory,
                 status_cb=self.status.emit, progress_cb=self.progress.emit,
                 cancel=lambda: self._stop,

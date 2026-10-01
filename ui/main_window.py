@@ -13,6 +13,7 @@ from ui.pages.download_page import DownloadPage
 from ui.pages.mods_page import ModsPage
 from ui.pages.packs_page import PacksPage
 from ui.pages.tasks_page import TasksPage
+from ui.pages.log_page import LogPage
 from ui.pages.settings_page import SettingsPage
 
 
@@ -136,6 +137,7 @@ class MainWindow(QMainWindow):
             ("模组", "mods", ModsPage),
             ("整合包", "packs", PacksPage),
             ("任务", "tasks", TasksPage),
+            ("日志", "logs", LogPage),
             ("设置", "settings", SettingsPage),
         ]
         for i, (text, icon_name, page_cls) in enumerate(nav_defs):
@@ -156,9 +158,15 @@ class MainWindow(QMainWindow):
         packs_page = next(self.pages.widget(i) for i in range(self.pages.count())
                           if isinstance(self.pages.widget(i), PacksPage))
         packs_page.installed_changed.connect(home_page.refresh_versions)
+        # 日志页：接收主页转发的游戏日志与崩溃分析
+        log_page = next(self.pages.widget(i) for i in range(self.pages.count())
+                        if isinstance(self.pages.widget(i), LogPage))
+        home_page.launch_started.connect(log_page.notify_launch)
+        home_page.log_line.connect(log_page.append_log)
+        home_page.crash_detected.connect(log_page.show_crash_analysis)
 
         # 侧边栏底部版本号
-        ver = QLabel("PCL 风格 v0.6", objectName="versionTag")
+        ver = QLabel("PCL 风格 v0.7", objectName="versionTag")
         ver.setAlignment(Qt.AlignCenter)
         side_layout.addWidget(ver)
 

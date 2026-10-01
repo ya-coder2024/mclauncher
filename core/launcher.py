@@ -6,6 +6,7 @@ import json
 import platform
 import re
 import subprocess
+import time
 import uuid as uuidlib
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -601,11 +602,14 @@ def launch(game_dir, vid, account=None, use_mirror=True, java_path=None,
 
 
 class LaunchWorker(QThread):
-    """后台执行 launch()，向 UI 发信号"""
+    """后台执行 launch() + 日志监控 + 退出分析，向 UI 发信号"""
 
     status = pyqtSignal(str)
     progress = pyqtSignal(int)   # 0-100
     launched = pyqtSignal(int)   # 游戏进程 PID
+    log_line = pyqtSignal(str)   # 新日志行（GBK解码后UTF-8发）
+    crashed = pyqtSignal(list, str)  # (分析结果列表, crash_report路径或""), 游戏异常退出
+    game_closed = pyqtSignal(int)    # 退出码
     failed = pyqtSignal(str)
 
     def __init__(self, game_dir, vid, account=None, use_mirror=True,
@@ -638,7 +642,65 @@ class LaunchWorker(QThread):
             )
         except InterruptedError:
             self.status.emit("已取消")
+            return
         except Exception as e:
             self.failed.emit(str(e))
-        else:
-            self.launched.emit(proc.pid)
+            return
+
+        self.launched.emit(proc.pid)
+
+        # ---- 日志监控 ----
+        log_path = Path(self.game_dir) / "versions" / self.vid / "launcher-log.txt"
+        last_size = log_path.stat().st_size if log_path.exists() else 0
+
+        while proc.poll() is None:
+            if self._stop:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                break
+            if log_path.exists():
+                size = log_path.stat().st_size
+                if size > last_size:
+                    try:
+                        with open(log_path, "rb") as f:
+                            f.seek(last_size)
+                            chunk = f.read(size - last_size)
+                            text = chunk.decode("gbk", errors="replace")
+                            for line in text.splitlines():
+                                self.log_line.emit(line)
+                    except Exception:
+                        pass
+                    last_size = size
+            time.sleep(0.3)
+
+        exit_code = proc.returncode if proc.returncode is not None else 0
+        self.game_closed.emit(exit_code)
+
+        # ---- 退出后分析 ----
+        if exit_code != 0 or not self._stop:
+            from core import crash_analyzer
+            findings = crash_analyzer.analyze_log(log_path)
+            hint = crash_analyzer.analyze_exit_code(exit_code)
+            if hint:
+                findings.insert(0, {"title": hint, "hint": "", "line": ""})
+            crash_dir = Path(self.game_dir) / "crash-reports"
+            latest_crash = None
+            if crash_dir.is_dir():
+                try:
+                    latest_crash = max(
+                        (p for p in crash_dir.iterdir() if p.suffix == ".txt"),
+                        key=lambda p: p.stat().st_mtime)
+                except ValueError:
+                    pass
+            if latest_crash:
+                crash_info = crash_analyzer.analyze_crash_report(latest_crash)
+                for f in crash_info.get("findings", []):
+                    findings.append(f)
+                # crash-report 的 exception/description 也带进来
+                if "exception" in crash_info:
+                    findings.append({"title": f"异常：{crash_info['exception']}",
+                                     "hint": crash_info.get("description", ""), "line": ""})
+            if findings or exit_code != 0:
+                self.crashed.emit(findings, str(latest_crash) if latest_crash else "")

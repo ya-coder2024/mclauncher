@@ -48,6 +48,9 @@ class _ManifestLoader(QThread):
 class HomePage(QWidget):
     # 点击启动按钮时发出（携带所选版本）
     start_requested = pyqtSignal(str)
+    launch_started = pyqtSignal(str)       # 开始启动某个版本（日志页重置用）
+    log_line = pyqtSignal(str)             # 转发游戏日志行
+    crash_detected = pyqtSignal(list, str) # 崩溃分析结果 + 报告路径
 
     def __init__(self):
         super().__init__()
@@ -308,16 +311,34 @@ class HomePage(QWidget):
         self._worker.progress.connect(self.launch_progress.setValue)
         self._worker.launched.connect(self._on_launched)
         self._worker.failed.connect(self._on_launch_failed)
+        # 日志与崩溃分析转发给日志页
+        self._worker.log_line.connect(self.log_line)
+        self._worker.crashed.connect(self._on_crashed)
+        self._worker.game_closed.connect(self._on_game_closed)
+        self.launch_started.emit(vid)
         self._worker.start()
 
     def _on_launched(self, pid):
         self.launch_status.setText(
-            f"游戏已启动（PID {pid}）。游戏窗口稍后弹出，日志见 versions/{self.version_box.currentText()}/launcher-log.txt"
+            f"游戏已启动（PID {pid}）。实时日志见「日志」页"
         )
         self.launch_progress.hide()
-        self.btn_launch.setEnabled(True)
-        self._worker = None
         self.start_requested.emit(self.version_box.currentText())
+        # 注意：worker 仍在监控游戏进程，等 game_closed 后再释放
+
+    def _on_game_closed(self, exit_code):
+        self.btn_launch.setEnabled(True)
+        if exit_code == 0:
+            self.launch_status.setText("游戏已正常退出")
+        else:
+            self.launch_status.setText(
+                f"游戏异常退出（代码 {exit_code}），请到「日志」页查看分析")
+        if self._worker is not None:
+            self._worker.deleteLater()
+            self._worker = None
+
+    def _on_crashed(self, findings, crash_path):
+        self.crash_detected.emit(findings, crash_path)
 
     def _on_launch_failed(self, err):
         self.launch_status.setText(f"启动失败：{err}")

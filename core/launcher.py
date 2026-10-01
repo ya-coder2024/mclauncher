@@ -29,6 +29,81 @@ def load_version(game_dir, vid):
     return json.loads(p.read_text(encoding="utf-8"))
 
 
+def merge_libraries(child_libs, parent_libs):
+    """合并两个 libraries 列表（子在前）。同名 Maven 库不是丢弃，而是
+    合并字段（downloads.artifact / classifiers、natives、rules 取并集）。"""
+    by_name, order = {}, []
+
+    def combine(a, b):
+        out = dict(a)
+        for k, v in b.items():
+            if k == "downloads":
+                d = dict(out.get("downloads", {}))
+                for dk, dv in v.items():
+                    if dk == "classifiers":
+                        cls = dict(d.get("classifiers", {}))
+                        cls.update(dv)
+                        d["classifiers"] = cls
+                    elif dk not in d:
+                        d[dk] = dv
+                out["downloads"] = d
+            elif k == "rules":
+                out["rules"] = list(a.get("rules", [])) + list(v)
+            elif k not in out:
+                out[k] = v
+        return out
+
+    for lib in child_libs + parent_libs:
+        key = lib.get("name", "")
+        if key and key in by_name:
+            by_name[key] = combine(by_name[key], lib)
+        else:
+            by_name[key] = dict(lib)
+            if key:
+                order.append(key)
+    return [by_name[k] for k in order]
+
+
+def load_effective_version(game_dir, vid, _seen=None):
+    """加载版本并递归合并 inheritsFrom（Forge/NeoForge 等继承版），
+    返回等效完整 json。规则同官方启动器：子版本优先。"""
+    if _seen is None:
+        _seen = set()
+    if vid in _seen:
+        raise RuntimeError(f"版本继承出现循环：{vid}")
+    _seen.add(vid)
+
+    data = load_version(game_dir, vid)
+    parent_id = data.get("inheritsFrom")
+    if not parent_id:
+        return data
+
+    parent = load_effective_version(game_dir, parent_id, _seen)
+
+    # 库：子与 parent 合并（同名库合并字段而非丢弃）
+    data["libraries"] = merge_libraries(data.get("libraries", []),
+                                        parent.get("libraries", []))
+
+    # 现代 arguments：子在前拼接；老式 minecraftArguments 直接覆盖
+    c_args, p_args = data.get("arguments"), parent.get("arguments")
+    if c_args or p_args:
+        data["arguments"] = {
+            "game": list((c_args or {}).get("game", []))
+                    + list((p_args or {}).get("game", [])),
+            "jvm": list((c_args or {}).get("jvm", []))
+                   + list((p_args or {}).get("jvm", [])),
+        }
+    if not data.get("minecraftArguments") and parent.get("minecraftArguments"):
+        data["minecraftArguments"] = parent["minecraftArguments"]
+
+    # 其余字段：子缺省取 parent
+    for key in ("mainClass", "assetIndex", "assets", "downloads",
+                "javaVersion", "logging", "type"):
+        if key not in data and key in parent:
+            data[key] = parent[key]
+    return data
+
+
 # ---------- 规则求值 ----------
 
 def rules_allow(rules):
@@ -66,7 +141,9 @@ def _fetch_missing(jobs, use_mirror, progress_cb, cancel):
         dest, url, sha1, _size = job[0], job[1], job[2], job[3]
         fb = job[4] if len(job) > 4 else None
         m_url = mirror_url(url) if use_mirror else url
+        # retries=2：镜像节点 403 时快速转入 fallback（官方源/其他镜像）
         download_file(m_url, dest, sha1=sha1, timeout=30, cancel=cancel,
+                      retries=2,
                       fallback_url=fb if use_mirror else None)
         with lock:
             done[0] += 1
@@ -108,7 +185,9 @@ def ensure_libraries(data, game_dir, use_mirror=True, progress_cb=None, cancel=N
         if art:
             dest = lib_root / art["path"]
             classpath.append(str(dest))
-            jobs.append((dest, art["url"], art.get("sha1"), art.get("size")))
+            # 镜像失败（如节点 403）回退官方 libraries.minecraft.net
+            jobs.append((dest, art["url"], art.get("sha1"), art.get("size"),
+                         [art["url"]]))
         else:
             # 无 downloads 字段（如 fabric-loader、asm 等 Maven 库）：从坐标构造多源回退
             rel, _ = _maven_artifact(name)
@@ -120,14 +199,21 @@ def ensure_libraries(data, game_dir, use_mirror=True, progress_cb=None, cancel=N
             ]
             classpath.append(str(dest))
             jobs.append((dest, sources[0], None, None, sources[1:]))
-        # 老格式：natives 映射 + classifiers
+        # Natives：
+        # - 老格式：lib["natives"]["windows"]（可能含 ${arch}）
+        # - 1.19 前现代格式：无 natives 映射，classifiers 内含 natives-windows
+        # - 26.x：分类器直接写在库名（org.xxx:natives-windows）
         nat_name = (lib.get("natives") or {}).get("windows")
+        if not nat_name and "natives-windows" in (d.get("classifiers") or {}):
+            nat_name = "natives-windows"
         if nat_name:
+            nat_name = nat_name.replace("${arch}", "64")
             cj = d.get("classifiers", {}).get(nat_name)
             if cj:
                 dest = lib_root / cj["path"]
                 natives.append(dest)
-                jobs.append((dest, cj["url"], cj.get("sha1"), cj.get("size")))
+                jobs.append((dest, cj["url"], cj.get("sha1"), cj.get("size"),
+                             [cj["url"]]))
         elif (art or not d) and ":natives-windows" in name:
             # 新格式（26.x）：分类器直接在库名里，natives jar 本身就是 artifact
             if art:
@@ -441,6 +527,8 @@ def launch(game_dir, vid, account=None, use_mirror=True, java_path=None,
         json_path.write_text(r.text, encoding="utf-8")
 
     data = json.loads(json_path.read_text(encoding="utf-8"))
+    if data.get("inheritsFrom"):
+        data = load_effective_version(game_dir, vid)
 
     say("正在校验客户端文件…")
     client_jar = ensure_client(data, game_dir, vid, use_mirror, cancel)

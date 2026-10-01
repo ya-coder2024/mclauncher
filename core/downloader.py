@@ -78,6 +78,12 @@ def download_file(url, dest, sha1=None, progress_cb=None, timeout=60, cancel=Non
             existing = dest.stat().st_size if dest.is_file() else 0
             headers = {"Range": f"bytes={existing}-"} if existing else None
             with requests_get(url, timeout=timeout, retries=1, stream=True, headers=headers) as r:
+                # 416：本地残留大小 >= 服务器文件（损坏/错误内容），删除后从头重下
+                if r.status_code == 416 and existing:
+                    dest.unlink(missing_ok=True)
+                    if attempt < retries - 1:
+                        time.sleep(1.0)
+                        continue
                 # 206 = 服务器支持续传；200 = 不支持，从头开始
                 resume = r.status_code == 206 and existing > 0
                 if not resume and existing:

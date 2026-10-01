@@ -4,13 +4,18 @@
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
-    QListWidget, QListWidgetItem, QProgressBar, QFrame,
+    QListWidget, QListWidgetItem, QProgressBar, QFrame, QComboBox,
 )
 
 from core.config import GAME_DIR
 from core.version_manifest import fetch_manifest
 from core.download_manager import DownloadManager
 from core import loader_install
+
+_LOADER_CHOICES = [("Fabric（轻量，更新快）", "fabric"),
+                   ("Quilt（Fabric 分支）", "quilt"),
+                   ("Forge（老牌，模组多）", "forge"),
+                   ("NeoForge（Forge 续作）", "neoforge")]
 
 _TYPE_NAMES = {
     "release": "正式版",
@@ -34,20 +39,21 @@ class ManifestLoader(QThread):
             self.failed.emit(str(e))
 
 
-class FabricInstallThread(QThread):
-    """后台一键安装 Fabric"""
+class LoaderInstallThread(QThread):
+    """后台一键安装模组加载器（Fabric/Quilt/Forge/NeoForge）"""
     status = pyqtSignal(str)
     installed = pyqtSignal(str)
     failed = pyqtSignal(str)
 
-    def __init__(self, mc_version):
+    def __init__(self, kind, mc_version):
         super().__init__()
+        self._kind = kind
         self._mc = mc_version
 
     def run(self):
         try:
-            new_id = loader_install.install_fabric(
-                GAME_DIR, self._mc, status_cb=self.status.emit)
+            new_id = loader_install.install_loader(
+                self._kind, GAME_DIR, self._mc, status_cb=self.status.emit)
             self.installed.emit(new_id)
         except loader_install.LoaderError as e:
             self.failed.emit(str(e))
@@ -61,7 +67,7 @@ class DownloadPage(QWidget):
         self._versions = []
         self._version_type = None
         self._downloader = None
-        self._fabric_installer = None
+        self._loader_worker = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 24, 28, 24)
@@ -108,10 +114,16 @@ class DownloadPage(QWidget):
         self.btn_download.setEnabled(False)
         self.btn_download.clicked.connect(self._start_download)
         bottom.addWidget(self.btn_download)
-        self.btn_fabric = QPushButton("为此版本安装 Fabric", objectName="small")
-        self.btn_fabric.setEnabled(False)
-        self.btn_fabric.clicked.connect(self._install_fabric)
-        bottom.addWidget(self.btn_fabric)
+
+        self.loader_box = QComboBox()
+        self.loader_box.setFixedWidth(190)
+        for label, key in _LOADER_CHOICES:
+            self.loader_box.addItem(label, key)
+        bottom.addWidget(self.loader_box)
+        self.btn_loader = QPushButton("安装加载器", objectName="small")
+        self.btn_loader.setEnabled(False)
+        self.btn_loader.clicked.connect(self._install_loader)
+        bottom.addWidget(self.btn_loader)
         root.addLayout(bottom)
 
         self.list.itemSelectionChanged.connect(self._on_select)
@@ -177,32 +189,34 @@ class DownloadPage(QWidget):
     def _on_select(self):
         has = bool(self.list.selectedItems())
         self.btn_download.setEnabled(has)
-        self.btn_fabric.setEnabled(has and self._fabric_installer is None)
+        self.btn_loader.setEnabled(has and self._loader_worker is None)
 
-    # ---------- 一键安装 Fabric ----------
-    def _install_fabric(self):
+    # ---------- 一键安装加载器 ----------
+    def _install_loader(self):
         items = self.list.selectedItems()
-        if not items or self._fabric_installer is not None:
+        if not items or self._loader_worker is not None:
             return
         mc = items[0].data(Qt.UserRole)["id"]
-        self.btn_fabric.setEnabled(False)
-        self.status_label.setText(f"正在为 {mc} 安装 Fabric…")
-        self._fabric_installer = FabricInstallThread(mc)
-        self._fabric_installer.status.connect(self.status_label.setText)
-        self._fabric_installer.installed.connect(self._on_fabric_done)
-        self._fabric_installer.failed.connect(self._on_fabric_fail)
-        self._fabric_installer.start()
+        kind = self.loader_box.currentData()
+        kind_label = loader_install.LOADER_LABELS[kind]
+        self.btn_loader.setEnabled(False)
+        self.status_label.setText(f"正在为 {mc} 安装 {kind_label}…")
+        self._loader_worker = LoaderInstallThread(kind, mc)
+        self._loader_worker.status.connect(self.status_label.setText)
+        self._loader_worker.installed.connect(self._on_loader_done)
+        self._loader_worker.failed.connect(self._on_loader_fail)
+        self._loader_worker.start()
 
-    def _on_fabric_done(self, new_id):
-        self._fabric_installer = None
+    def _on_loader_done(self, new_id):
+        self._loader_worker = None
         self.status_label.setText(
-            f"Fabric 安装完成：{new_id} —— 回主页即可选择该版本启动")
-        self.btn_fabric.setEnabled(True)
+            f"加载器安装完成：{new_id} —— 回主页即可选择该版本启动")
+        self.btn_loader.setEnabled(True)
 
-    def _on_fabric_fail(self, err):
-        self._fabric_installer = None
-        self.status_label.setText(f"Fabric 安装失败：{err}")
-        self.btn_fabric.setEnabled(True)
+    def _on_loader_fail(self, err):
+        self._loader_worker = None
+        self.status_label.setText(f"加载器安装失败：{err}")
+        self.btn_loader.setEnabled(True)
 
     # ---------- 下载 ----------
     def _start_download(self):

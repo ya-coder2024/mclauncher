@@ -408,8 +408,13 @@ def offline_uuid(name):
 
 # ---------- 命令组装 ----------
 
-def build_command(data, game_dir, vid, java_exe, classpath, account=None, memory="2G"):
-    """组装启动命令。account：来自 core.auth 的账号字典。"""
+def build_command(data, game_dir, vid, java_exe, classpath, account=None, memory="2G",
+                  width=None, height=None, jvm_args=None):
+    """组装启动命令。account：来自 core.auth 的账号字典。
+
+    width/height：窗口分辨率，非空时强制追加 --width/--height（覆盖 json 默认值）。
+    jvm_args：额外 JVM 参数字符串，追加在内存参数之后。
+    """
     account = account or {"type": "offline", "name": "Player",
                           "uuid": offline_uuid("Player"), "access_token": "0"}
     username = account["name"]
@@ -455,9 +460,24 @@ def build_command(data, game_dir, vid, java_exe, classpath, account=None, memory
         return s
 
     cmd = [java_exe, f"-Xmx{memory}", f"-Xms{memory}"]
+    if jvm_args:
+        cmd.extend(jvm_args.split())  # 用户追加的 JVM 参数（空格分隔）
     args = data.get("arguments")
 
+    # 自定义分辨率：现代版本 json 自带 --width/--height，直接改值；
+    # 老式 minecraftArguments 和无该参数的版本在 game 参数后追加
+    def _apply_resolution(entry_list):
+        for i, e in enumerate(entry_list):
+            if isinstance(e, dict):
+                continue
+            if e == "--width" and width:
+                entry_list[i + 1] = str(width)
+            elif e == "--height" and height:
+                entry_list[i + 1] = str(height)
+        return entry_list
+
     def extend(entries):
+        entries = _apply_resolution(list(entries))
         for e in entries:
             if isinstance(e, dict):
                 if not rules_allow(e.get("rules")):
@@ -477,13 +497,19 @@ def build_command(data, game_dir, vid, java_exe, classpath, account=None, memory
         extend(args.get("game", []))
     else:
         cmd += [fill(t) for t in data.get("minecraftArguments", "").split()]
+    # 版本 json 没有分辨率参数时补在 game 参数末尾
+    if width and "--width" not in cmd:
+        cmd += ["--width", str(width)]
+    if height and "--height" not in cmd:
+        cmd += ["--height", str(height)]
     return cmd
 
 
 # ---------- 一键启动 ----------
 
 def launch(game_dir, vid, account=None, use_mirror=True, java_path=None,
-           memory="2G", status_cb=None, progress_cb=None, cancel=None):
+           memory="2G", width=None, height=None, jvm_args=None,
+           status_cb=None, progress_cb=None, cancel=None):
     """同步执行启动全流程，返回 Popen 进程对象。
 
     account：core.auth 的账号字典；为空时使用默认离线账号。
@@ -565,7 +591,8 @@ def launch(game_dir, vid, account=None, use_mirror=True, java_path=None,
 
     ensure_mods_dir(game_dir)  # 确保 mods 目录存在，供 Fabric/Forge 加载器扫描
 
-    cmd = build_command(data, game_dir, vid, java_exe, cp, account, memory)
+    cmd = build_command(data, game_dir, vid, java_exe, cp, account, memory,
+                        width=width, height=height, jvm_args=jvm_args)
     say("正在启动游戏…")
     log = open(vdir / "launcher-log.txt", "ab")
     proc = subprocess.Popen(cmd, cwd=str(game_dir), stdout=log, stderr=subprocess.STDOUT)
@@ -582,7 +609,8 @@ class LaunchWorker(QThread):
     failed = pyqtSignal(str)
 
     def __init__(self, game_dir, vid, account=None, use_mirror=True,
-                 java_path=None, memory="2G"):
+                 java_path=None, memory="2G", width=None, height=None,
+                 jvm_args=None):
         super().__init__()
         self.game_dir = game_dir
         self.vid = vid
@@ -590,6 +618,9 @@ class LaunchWorker(QThread):
         self.use_mirror = use_mirror
         self.java_path = java_path
         self.memory = memory
+        self.width = width
+        self.height = height
+        self.jvm_args = jvm_args
         self._stop = False
 
     def stop(self):
@@ -601,6 +632,7 @@ class LaunchWorker(QThread):
                 self.game_dir, self.vid,
                 account=self.account, use_mirror=self.use_mirror,
                 java_path=self.java_path, memory=self.memory,
+                width=self.width, height=self.height, jvm_args=self.jvm_args,
                 status_cb=self.status.emit, progress_cb=self.progress.emit,
                 cancel=lambda: self._stop,
             )

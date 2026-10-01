@@ -62,11 +62,12 @@ def file_ok(dest, sha1=None, size=None):
     return True
 
 
-def download_file(url, dest, sha1=None, progress_cb=None, timeout=60, cancel=None, retries=5, fallback_url=None):
+def download_file(url, dest, sha1=None, progress_cb=None, timeout=60, cancel=None, paused=None, retries=5, fallback_url=None):
     """下载单个文件，支持断点续传、中途断流重试、镜像失败回退官方源。
 
     progress_cb(received, total)：每块回调一次，total 可能为 0
     cancel()：返回 True 时中断，抛 InterruptedError
+    paused()：返回 True 时暂停写入（阻塞循环）
     fallback_url：主 url 全部重试失败后，改用该地址再试一次（用于 BMCLAPI → 官方）
     """
     dest = Path(dest)
@@ -97,6 +98,11 @@ def download_file(url, dest, sha1=None, progress_cb=None, timeout=60, cancel=Non
                 done = existing
                 with open(dest, mode) as f:
                     for chunk in r.iter_content(CHUNK):
+                        # 暂停：空转等待，不写文件
+                        while paused and paused():
+                            time.sleep(0.2)
+                            if cancel and cancel():
+                                raise InterruptedError("下载已取消")
                         if not chunk:
                             continue
                         f.write(chunk)
@@ -135,6 +141,6 @@ def download_file(url, dest, sha1=None, progress_cb=None, timeout=60, cancel=Non
         for fb in fallbacks:
             if fb and fb != url:
                 return download_file(fb, dest, sha1=sha1, progress_cb=progress_cb,
-                                     timeout=timeout, cancel=cancel, retries=3,
+                                     timeout=timeout, cancel=cancel, paused=paused, retries=3,
                                      fallback_url=fallbacks[fallbacks.index(fb)+1:] or None)
     raise last_err

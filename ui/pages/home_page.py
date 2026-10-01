@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
 
 from ui import theme
 from ui.account_dialog import AccountDialog
-from core.config import GAME_DIR
+from core.config import GAME_DIR, Settings
 from core.version_manifest import fetch_manifest
 from core.download_manager import DownloadManager
 from core.auth import AccountStore
@@ -57,6 +57,7 @@ class HomePage(QWidget):
         self._worker = None            # 启动线程
         self._local_versions = []
         self.account_store = AccountStore(GAME_DIR)
+        self.settings = Settings()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -293,8 +294,16 @@ class HomePage(QWidget):
         self.launch_status.setText(f"正在准备启动 {vid}…")
         self.launch_progress.show()
         self.launch_progress.setValue(0)
-        self._worker = LaunchWorker(GAME_DIR, vid,
-                                    account=self.account_store.current())
+        s = self.settings
+        s.load()  # 设置页可能刚改过，重新读取
+        self._worker = LaunchWorker(
+            GAME_DIR, vid,
+            account=self.account_store.current(),
+            java_path=s.java_for(vid),
+            memory=f"{s.memory_mb}M",
+            width=s.width, height=s.height,
+            jvm_args=s.jvm_args,
+        )
         self._worker.status.connect(self.launch_status.setText)
         self._worker.progress.connect(self.launch_progress.setValue)
         self._worker.launched.connect(self._on_launched)

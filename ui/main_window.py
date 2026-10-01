@@ -11,6 +11,8 @@ from ui import theme
 from ui.pages.home_page import HomePage
 from ui.pages.download_page import DownloadPage
 from ui.pages.mods_page import ModsPage
+from ui.pages.packs_page import PacksPage
+from ui.pages.tasks_page import TasksPage
 from ui.pages.settings_page import SettingsPage
 
 
@@ -132,6 +134,8 @@ class MainWindow(QMainWindow):
             ("主页", "home", HomePage),
             ("下载", "download", DownloadPage),
             ("模组", "mods", ModsPage),
+            ("整合包", "packs", PacksPage),
+            ("任务", "tasks", TasksPage),
             ("设置", "settings", SettingsPage),
         ]
         for i, (text, icon_name, page_cls) in enumerate(nav_defs):
@@ -149,9 +153,12 @@ class MainWindow(QMainWindow):
         mods_page = next(self.pages.widget(i) for i in range(self.pages.count())
                          if isinstance(self.pages.widget(i), ModsPage))
         mods_page.installed_changed.connect(home_page.refresh_versions)
+        packs_page = next(self.pages.widget(i) for i in range(self.pages.count())
+                          if isinstance(self.pages.widget(i), PacksPage))
+        packs_page.installed_changed.connect(home_page.refresh_versions)
 
         # 侧边栏底部版本号
-        ver = QLabel("PCL 风格 v0.1", objectName="versionTag")
+        ver = QLabel("PCL 风格 v0.6", objectName="versionTag")
         ver.setAlignment(Qt.AlignCenter)
         side_layout.addWidget(ver)
 

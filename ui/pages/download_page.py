@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
 
 from core.config import GAME_DIR
 from core.version_manifest import fetch_manifest
-from core.download_manager import DownloadManager
+from core.download_queue import DownloadQueue, VersionDownloadTask, TaskState
 from core import loader_install
 
 _LOADER_CHOICES = [("Fabric（轻量，更新快）", "fabric"),
@@ -66,7 +66,6 @@ class DownloadPage(QWidget):
         super().__init__()
         self._versions = []
         self._version_type = None
-        self._downloader = None
         self._loader_worker = None
 
         root = QVBoxLayout(self)
@@ -221,28 +220,33 @@ class DownloadPage(QWidget):
     # ---------- 下载 ----------
     def _start_download(self):
         items = self.list.selectedItems()
-        if not items or self._downloader is not None:
+        if not items:
             return
         v = items[0].data(Qt.UserRole)
-
-        self._downloader = DownloadManager(v["id"], v["url"], GAME_DIR)
-        self._downloader.progress.connect(self.progress.setValue)
-        self._downloader.status.connect(self.status_label.setText)
-        self._downloader.finished_ok.connect(self._on_done)
-        self._downloader.failed.connect(self._on_fail)
+        # 加入全局下载队列（任务页可暂停/继续/取消）
+        task = DownloadQueue.instance().add(
+            VersionDownloadTask(v["id"], v["url"]))
+        self.status_label.setText(f"{v['id']} 已加入下载队列，任务页可管理")
+        task.updated.connect(lambda t=task: self._on_task_update(t))
+        task.finished.connect(lambda t=task: self._on_task_finished(t))
         self.progress.show()
         self.progress.setValue(0)
-        self.btn_download.setEnabled(False)
-        self._downloader.start()
 
-    def _on_done(self, vid):
-        self.progress.setValue(100)
-        self.status_label.setText(f"{vid} 下载完成 → {GAME_DIR / 'versions' / vid}")
-        self._downloader = None
-        self.btn_download.setEnabled(True)
+    def _on_task_update(self, task):
+        self.progress.setValue(task.progress)
+        if task.state == TaskState.RUNNING:
+            self.status_label.setText(f"{task.name} 下载中… {task.speed_text()}")
+        elif task.state == TaskState.PAUSED:
+            self.status_label.setText(f"{task.name} 已暂停")
 
-    def _on_fail(self, err):
-        self.status_label.setText(f"下载失败：{err}")
-        self.progress.hide()
-        self._downloader = None
-        self.btn_download.setEnabled(True)
+    def _on_task_finished(self, task):
+        if task.state == TaskState.DONE:
+            self.progress.setValue(100)
+            self.status_label.setText(
+                f"{task.name} 下载完成 → {GAME_DIR / 'versions' / task.name}")
+        elif task.state == TaskState.FAILED:
+            self.status_label.setText(f"下载失败：{task.error}")
+            self.progress.hide()
+        else:
+            self.status_label.setText(f"{task.name} 已取消")
+            self.progress.hide()

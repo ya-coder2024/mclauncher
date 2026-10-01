@@ -35,7 +35,16 @@ def search_mods(query="", mc_version=None, loader=None, offset=0, limit=20):
     每个结果：{project_id, slug, title, description, author,
               downloads, categories, icon_url}
     """
-    facets = [["project_type:mod"]]
+    return _search("mod", query, mc_version, loader, offset, limit)
+
+
+def search_modpacks(query="", mc_version=None, offset=0, limit=20):
+    """搜索整合包（project_type=modpack），返回结构同 search_mods"""
+    return _search("modpack", query, mc_version, None, offset, limit)
+
+
+def _search(project_type, query, mc_version, loader, offset, limit):
+    facets = [[f"project_type:{project_type}"]]
     if mc_version:
         facets.append([f"versions:{mc_version}"])
     if loader:

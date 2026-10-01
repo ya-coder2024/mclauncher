@@ -20,6 +20,7 @@ _MIRROR_BASE = "https://bmclapi2.bangbang93.com"
 
 class DownloadManager(QThread):
     progress = pyqtSignal(int)     # 0-100
+    progress_bytes = pyqtSignal(int, int)  # (已下载字节, 总字节)，速度统计用
     status = pyqtSignal(str)       # 状态文字
     finished_ok = pyqtSignal(str)  # 完成，参数为版本 id
     failed = pyqtSignal(str)       # 失败原因
@@ -72,6 +73,7 @@ class DownloadManager(QThread):
                 t = t or total_size
                 if t:
                     self.progress.emit(int(done / t * 100))
+                self.progress_bytes.emit(done, t)
 
             download_file(
                 self._url(url),

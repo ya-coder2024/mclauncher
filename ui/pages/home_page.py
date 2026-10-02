@@ -238,7 +238,9 @@ class HomePage(QWidget):
             try:
                 data = json.loads(jp.read_text(encoding="utf-8"))
                 jv = data.get("javaVersion", {})
-                mods = scan_mods(GAME_DIR, include_disabled=False)
+                iso = self.settings.isolation_for(text)
+                mods_root = (Path(GAME_DIR) / "versions" / text) if iso else GAME_DIR
+                mods = scan_mods(mods_root, include_disabled=False)
                 mod_line = ""
                 if mods:
                     names = "、".join(m["name"] for m in mods[:6])
@@ -249,7 +251,8 @@ class HomePage(QWidget):
                 self.version_desc.setText(
                     f"{text}\n\n类型：{data.get('type', '-')}\n"
                     f"Java：{jv.get('majorVersion', '-')}（{jv.get('component', '-')}）\n"
-                    f"发布时间：{str(data.get('releaseTime', ''))[:10]}"
+                    f"发布时间：{str(data.get('releaseTime', ''))[:10]}\n"
+                    f"版本隔离：{'开启（数据在该版本目录内）' if iso else '关闭'}"
                     f"{mod_line}"
                 )
                 return
@@ -306,6 +309,7 @@ class HomePage(QWidget):
             memory=f"{s.memory_mb}M",
             width=s.width, height=s.height,
             jvm_args=s.jvm_args,
+            isolate=s.isolation_for(vid),
         )
         self._worker.status.connect(self.launch_status.setText)
         self._worker.progress.connect(self.launch_progress.setValue)

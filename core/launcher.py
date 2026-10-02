@@ -410,11 +410,12 @@ def offline_uuid(name):
 # ---------- 命令组装 ----------
 
 def build_command(data, game_dir, vid, java_exe, classpath, account=None, memory="2G",
-                  width=None, height=None, jvm_args=None):
+                  width=None, height=None, jvm_args=None, run_dir=None):
     """组装启动命令。account：来自 core.auth 的账号字典。
 
     width/height：窗口分辨率，非空时强制追加 --width/--height（覆盖 json 默认值）。
     jvm_args：额外 JVM 参数字符串，追加在内存参数之后。
+    run_dir：游戏工作目录（版本隔离时为版本目录），决定 --gameDir 与存档/配置位置。
     """
     account = account or {"type": "offline", "name": "Player",
                           "uuid": offline_uuid("Player"), "access_token": "0"}
@@ -424,6 +425,7 @@ def build_command(data, game_dir, vid, java_exe, classpath, account=None, memory
     # 现代版本统一用 msa；离线保持 legacy
     user_type = "legacy" if account["type"] == "offline" else "msa"
 
+    run_dir = Path(run_dir) if run_dir else Path(game_dir)
     natives_dir = Path(game_dir) / "versions" / vid / "natives"
     subs = {
         "auth_player_name": username,
@@ -436,7 +438,7 @@ def build_command(data, game_dir, vid, java_exe, classpath, account=None, memory
         "user_properties": "{}",
         "version_name": vid,
         "version_type": data.get("type", "release"),
-        "game_directory": str(game_dir),
+        "game_directory": str(run_dir),
         "launcher_name": "mclauncher",
         "launcher_version": "0.1",
         "assets_root": str(Path(game_dir) / "assets"),
@@ -510,11 +512,12 @@ def build_command(data, game_dir, vid, java_exe, classpath, account=None, memory
 
 def launch(game_dir, vid, account=None, use_mirror=True, java_path=None,
            memory="2G", width=None, height=None, jvm_args=None,
-           status_cb=None, progress_cb=None, cancel=None):
+           status_cb=None, progress_cb=None, cancel=None, isolate=False):
     """同步执行启动全流程，返回 Popen 进程对象。
 
     account：core.auth 的账号字典；为空时使用默认离线账号。
     progress_cb(percent)：0-100 整体进度
+    isolate：版本隔离——游戏数据（存档/模组/配置）写入 versions/vid/ 下
     """
     game_dir = Path(game_dir)
     vdir = game_dir / "versions" / vid
@@ -590,13 +593,17 @@ def launch(game_dir, vid, account=None, use_mirror=True, java_path=None,
     say("正在解压本地库…")
     extract_natives(natives, vdir / "natives")
 
-    ensure_mods_dir(game_dir)  # 确保 mods 目录存在，供 Fabric/Forge 加载器扫描
+    # 版本隔离：游戏工作目录指向版本目录（存档/模组/配置随之独立）
+    run_dir = vdir if isolate else game_dir
+
+    ensure_mods_dir(run_dir)  # 确保 mods 目录存在，供 Fabric/Forge 加载器扫描
 
     cmd = build_command(data, game_dir, vid, java_exe, cp, account, memory,
-                        width=width, height=height, jvm_args=jvm_args)
-    say("正在启动游戏…")
+                        width=width, height=height, jvm_args=jvm_args,
+                        run_dir=run_dir)
+    say("正在启动游戏…" + ("（版本隔离已开启）" if isolate else ""))
     log = open(vdir / "launcher-log.txt", "ab")
-    proc = subprocess.Popen(cmd, cwd=str(game_dir), stdout=log, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(cmd, cwd=str(run_dir), stdout=log, stderr=subprocess.STDOUT)
     say(f"游戏已启动（PID {proc.pid}），日志：versions/{vid}/launcher-log.txt")
     return proc
 
@@ -614,7 +621,7 @@ class LaunchWorker(QThread):
 
     def __init__(self, game_dir, vid, account=None, use_mirror=True,
                  java_path=None, memory="2G", width=None, height=None,
-                 jvm_args=None):
+                 jvm_args=None, isolate=False):
         super().__init__()
         self.game_dir = game_dir
         self.vid = vid
@@ -625,6 +632,7 @@ class LaunchWorker(QThread):
         self.width = width
         self.height = height
         self.jvm_args = jvm_args
+        self.isolate = isolate
         self._stop = False
 
     def stop(self):
@@ -637,6 +645,7 @@ class LaunchWorker(QThread):
                 account=self.account, use_mirror=self.use_mirror,
                 java_path=self.java_path, memory=self.memory,
                 width=self.width, height=self.height, jvm_args=self.jvm_args,
+                isolate=self.isolate,
                 status_cb=self.status.emit, progress_cb=self.progress.emit,
                 cancel=lambda: self._stop,
             )
@@ -685,15 +694,21 @@ class LaunchWorker(QThread):
             hint = crash_analyzer.analyze_exit_code(exit_code)
             if hint:
                 findings.insert(0, {"title": hint, "hint": "", "line": ""})
-            crash_dir = Path(self.game_dir) / "crash-reports"
+            # 崩溃报告可能在不同工作目录（隔离时游戏写入版本目录）
+            run_dir = (Path(self.game_dir) / "versions" / self.vid
+                       if self.isolate else Path(self.game_dir))
             latest_crash = None
-            if crash_dir.is_dir():
+            for cdir in (run_dir / "crash-reports",
+                         Path(self.game_dir) / "crash-reports"):
+                if not cdir.is_dir():
+                    continue
                 try:
-                    latest_crash = max(
-                        (p for p in crash_dir.iterdir() if p.suffix == ".txt"),
-                        key=lambda p: p.stat().st_mtime)
+                    c = max((p for p in cdir.iterdir() if p.suffix == ".txt"),
+                            key=lambda p: p.stat().st_mtime)
                 except ValueError:
-                    pass
+                    continue
+                if latest_crash is None or c.stat().st_mtime > latest_crash.stat().st_mtime:
+                    latest_crash = c
             if latest_crash:
                 crash_info = crash_analyzer.analyze_crash_report(latest_crash)
                 for f in crash_info.get("findings", []):

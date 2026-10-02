@@ -77,10 +77,10 @@ class ModInstallWorker(QThread):
     failed = pyqtSignal(str)
     installed = pyqtSignal(list)
 
-    def __init__(self, version):
+    def __init__(self, version, mods_dir=None):
         super().__init__()
         self._version = version
-        self._mods_dir = Path(GAME_DIR) / "mods"
+        self._mods_dir = Path(mods_dir) if mods_dir else Path(GAME_DIR) / "mods"
 
     def run(self):
         try:
@@ -169,6 +169,7 @@ class DownloadTab(QWidget):
         self._search_thread = None
         self._version_thread = None
         self._installer = None
+        self._target_dir = None  # None = 全局 mods 目录
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 12, 0, 0)
@@ -386,12 +387,16 @@ class DownloadTab(QWidget):
         self.progress.show()
         self.progress.setValue(0)
         self.btn_install.setEnabled(False)
-        self._installer = ModInstallWorker(version)
+        self._installer = ModInstallWorker(version, mods_dir=self._target_dir)
         self._installer.status.connect(self.status_label.setText)
         self._installer.progress.connect(self.progress.setValue)
         self._installer.failed.connect(self._on_install_failed)
         self._installer.installed.connect(self._on_installed)
         self._installer.start()
+
+    def set_target(self, mods_root):
+        """切换安装目标（None = 全局 mods 目录）"""
+        self._target_dir = mods_root
 
     def _on_installed(self, names):
         self._installer = None
@@ -416,9 +421,13 @@ class _ScanThread(QThread):
     done = pyqtSignal(list)
     failed = pyqtSignal(str)
 
+    def __init__(self, mods_dir):
+        super().__init__()
+        self._dir = Path(mods_dir) if mods_dir else Path(GAME_DIR)
+
     def run(self):
         try:
-            self.done.emit(launcher_core.scan_mods(GAME_DIR))
+            self.done.emit(launcher_core.scan_mods(self._dir))
         except Exception as e:
             self.failed.emit(str(e))
 
@@ -429,15 +438,15 @@ class InstalledTab(QWidget):
     def __init__(self):
         super().__init__()
         self._scan = None
+        self._dir = Path(GAME_DIR)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 12, 0, 0)
         root.setSpacing(10)
 
-        tip = QLabel("管理 .minecraft/mods 中的模组。禁用后加载器不会加载该模组（重启游戏生效）。",
-                     objectName="cardDesc")
-        tip.setWordWrap(True)
-        root.addWidget(tip)
+        self.tip = QLabel(self._tip_text(), objectName="cardDesc")
+        self.tip.setWordWrap(True)
+        root.addWidget(self.tip)
 
         self.list = QListWidget(objectName="versionList")
         root.addWidget(self.list, 1)
@@ -458,11 +467,24 @@ class InstalledTab(QWidget):
         bottom.addWidget(self.btn_refresh)
         root.addLayout(bottom)
 
+    def _tip_text(self):
+        return (f"管理 {self._dir / 'mods'} 中的模组。"
+                "禁用后加载器不会加载该模组（重启游戏生效）。")
+
+    def set_target(self, mods_root):
+        """切换管理位置（全局目录或某版本目录）"""
+        new_dir = Path(mods_root) if mods_root else Path(GAME_DIR)
+        if new_dir == self._dir:
+            return
+        self._dir = new_dir
+        self.tip.setText(self._tip_text())
+        self.refresh()
+
     def refresh(self):
         if self._scan is not None:
             return
         self.status_label.setText("正在扫描…")
-        self._scan = _ScanThread()
+        self._scan = _ScanThread(self._dir)
         self._scan.done.connect(self._on_scanned)
         self._scan.failed.connect(self._on_scan_failed)
         self._scan.start()
@@ -525,7 +547,7 @@ class InstalledTab(QWidget):
             self.status_label.setText("请先选择一个模组")
             return
         try:
-            launcher_core.set_mod_enabled(GAME_DIR, m["file"], m["disabled"])
+            launcher_core.set_mod_enabled(self._dir, m["file"], m["disabled"])
         except Exception as e:
             self.status_label.setText(f"操作失败：{e}")
             return
@@ -546,7 +568,7 @@ class InstalledTab(QWidget):
         if ok != QMessageBox.Yes:
             return
         try:
-            launcher_core.delete_mod(GAME_DIR, m["file"])
+            launcher_core.delete_mod(self._dir, m["file"])
         except Exception as e:
             self.status_label.setText(f"删除失败：{e}")
             return
@@ -568,6 +590,17 @@ class ModsPage(QWidget):
 
         root.addWidget(QLabel("模组", objectName="pageTitle"))
 
+        # ---- 管理位置：全局目录或版本隔离目录 ----
+        loc = QHBoxLayout()
+        loc.setSpacing(8)
+        loc.addWidget(QLabel("管理位置：", objectName="cardDesc"))
+        self.target_combo = QComboBox()
+        self.target_combo.setFixedWidth(320)
+        self.target_combo.currentIndexChanged.connect(self._on_target_changed)
+        loc.addWidget(self.target_combo)
+        loc.addStretch()
+        root.addLayout(loc)
+
         self.tabs = QTabWidget()
         self.tab_download = DownloadTab()
         self.tab_installed = InstalledTab()
@@ -578,6 +611,32 @@ class ModsPage(QWidget):
 
         self.tab_download.changed.connect(self.installed_changed.emit)
         self.tab_installed.changed.connect(self.installed_changed.emit)
+        self.refresh_targets()
+
+    def refresh_targets(self):
+        """刷新管理位置下拉：全局目录 + 各本地版本（隔离版本标注）"""
+        from core.config import Settings
+        s = Settings()
+        self.target_combo.blockSignals(True)
+        self.target_combo.clear()
+        self.target_combo.addItem("全局目录（.minecraft）", "")
+        vroot = Path(GAME_DIR) / "versions"
+        if vroot.is_dir():
+            for d in sorted(vroot.iterdir(), reverse=True):
+                if (d / f"{d.name}.json").is_file():
+                    tag = "  [隔离]" if s.isolation_for(d.name) else ""
+                    self.target_combo.addItem(d.name + tag, d.name)
+        self.target_combo.blockSignals(False)
+        self._apply_target()
+
+    def _on_target_changed(self, _idx):
+        self._apply_target()
+
+    def _apply_target(self):
+        vid = self.target_combo.currentData() or ""
+        target = (Path(GAME_DIR) / "versions" / vid) if vid else None
+        self.tab_download.set_target(target)
+        self.tab_installed.set_target(target)
 
     def _on_tab_changed(self, idx):
         if self.tabs.widget(idx) is self.tab_installed:

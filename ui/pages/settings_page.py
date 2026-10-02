@@ -7,6 +7,7 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton,
     QComboBox, QSlider, QSpinBox, QLineEdit, QFileDialog, QScrollArea,
+    QCheckBox,
 )
 
 from core.config import GAME_DIR, Settings
@@ -51,6 +52,7 @@ class SettingsPage(QWidget):
         page.addWidget(self._make_memory_card())
         page.addWidget(self._make_resolution_card())
         page.addWidget(self._make_jvm_card())
+        page.addWidget(self._make_isolation_card())
 
         # 保存
         save_row = QHBoxLayout()
@@ -168,6 +170,67 @@ class SettingsPage(QWidget):
         v.addWidget(self.jvm_edit)
         return card
 
+    def _make_isolation_card(self):
+        card, v = self._card(
+            "版本隔离",
+            "开启后每个版本使用独立的 存档/模组/配置 目录（versions/<版本>/ 下），"
+            "多版本、多整合包互不干扰；资源与库文件仍全局共享")
+        self.iso_check = QCheckBox("默认对所有版本开启版本隔离")
+        self.iso_check.setChecked(bool(self.settings.data.get("isolation")))
+        v.addWidget(self.iso_check)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(QLabel("按版本覆盖：", objectName="cardDesc"))
+        self.iso_ver_combo = QComboBox()
+        self.iso_ver_combo.setFixedWidth(240)
+        row.addWidget(self.iso_ver_combo)
+        self.iso_state_combo = QComboBox()
+        self.iso_state_combo.addItem("跟随全局设置", None)
+        self.iso_state_combo.addItem("强制开启", True)
+        self.iso_state_combo.addItem("强制关闭", False)
+        row.addWidget(self.iso_state_combo)
+        self.iso_state_combo.currentIndexChanged.connect(self._on_version_iso_changed)
+        v.addLayout(row)
+
+        self.iso_ver_combo.currentTextChanged.connect(self._sync_iso_state)
+        self._refresh_iso_versions()
+        return card
+
+    def _refresh_iso_versions(self):
+        vroot = Path(GAME_DIR) / "versions"
+        ids = []
+        if vroot.is_dir():
+            ids = sorted((d.name for d in vroot.iterdir()
+                          if (d / f"{d.name}.json").is_file()), reverse=True)
+        self.iso_ver_combo.blockSignals(True)
+        self.iso_ver_combo.clear()
+        self.iso_ver_combo.addItems(ids)
+        self.iso_ver_combo.blockSignals(False)
+        self._sync_iso_state(self.iso_ver_combo.currentText())
+
+    def _sync_iso_state(self, vid):
+        if not vid:
+            return
+        current = self.settings.data["per_version_isolation"].get(vid)
+        combo = self.iso_state_combo
+        combo.blockSignals(True)
+        idx = 0
+        for i in range(combo.count()):
+            if combo.itemData(i) is not None and bool(combo.itemData(i)) == bool(current):
+                idx = i
+                break
+        combo.setCurrentIndex(idx)
+        combo.blockSignals(False)
+
+    def _on_version_iso_changed(self, _idx):
+        vid = self.iso_ver_combo.currentText()
+        if vid:
+            self.settings.set_isolation_for(vid, self.iso_state_combo.currentData())
+            state = {None: "跟随全局", True: "强制开启", False: "强制关闭"}[
+                self.iso_state_combo.currentData()]
+            self.save_hint.setText(f"{vid} 的隔离设置：{state}")
+
     # ---------- Java 扫描 ----------
     def _start_scan(self):
         if self._scan_thread is not None:
@@ -271,6 +334,7 @@ class SettingsPage(QWidget):
         s.data["width"] = self.width_spin.value()
         s.data["height"] = self.height_spin.value()
         s.data["jvm_args"] = self.jvm_edit.text().strip()
+        s.data["isolation"] = self.iso_check.isChecked()
         s.save()
         self.save_hint.setText("已保存 ✓")
 
@@ -281,7 +345,9 @@ class SettingsPage(QWidget):
         self.width_spin.setValue(self.settings.width)
         self.height_spin.setValue(self.settings.height)
         self.jvm_edit.setText(self.settings.jvm_args)
+        self.iso_check.setChecked(bool(self.settings.data.get("isolation")))
         self._fill_java_combo(self.java_combo, self.settings.java_path,
                               auto_label="自动检测")
         self._refresh_local_versions()
         self._fill_version_java_combo()
+        self._refresh_iso_versions()

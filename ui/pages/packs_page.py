@@ -201,7 +201,8 @@ class PacksPage(QWidget):
         if task.state == TaskState.DONE:
             self.progress.setValue(100)
             self.status_label.setText(
-                f"整合包 {task.instance or task.name} 安装完成，回主页选择对应版本启动")
+                f"整合包安装完成：版本 {task.instance or '?'}"
+                f"（已开启版本隔离），回主页选择该版本启动")
             self.installed_changed.emit()
         elif task.state == TaskState.FAILED:
             self.progress.hide()

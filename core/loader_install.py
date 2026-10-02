@@ -42,6 +42,14 @@ class LoaderError(Exception):
     """加载器安装失败（信息直接展示给用户）"""
 
 
+class AlreadyInstalledError(LoaderError):
+    """版本已安装（携带版本 id，供整合包安装复用该版本目录）"""
+
+    def __init__(self, vid):
+        super().__init__(f"版本 {vid} 已安装，无需重复安装")
+        self.version_id = vid
+
+
 def _get_json(url):
     try:
         r = requests.get(url, timeout=TIMEOUT)
@@ -152,7 +160,7 @@ def install_meta(kind, game_dir, mc_version, loader_version=None,
 
     new_id = f"{mc_version}-{label} {loader_version}"
     if new_id in installed_ids(game_dir):
-        raise LoaderError(f"版本 {new_id} 已安装，无需重复安装")
+        raise AlreadyInstalledError(new_id)
 
     say(f"正在下载 {label} Loader {loader_version} 的版本信息…")
     base_url, api = _META_SOURCES[kind]
@@ -343,7 +351,7 @@ def install_forge(game_dir, mc_version, loader_version=None, status_cb=None):
 
     new_id = f"{mc_version}-forge-{loader_version}"
     if new_id in installed_ids(game_dir):
-        raise LoaderError(f"版本 {new_id} 已安装，无需重复安装")
+        raise AlreadyInstalledError(new_id)
 
     # 安装器下载多源：BMCLAPI maven 直链 → BMCLAPI download 端点 → Forge 官方 maven
     maven_rel = f"net/minecraftforge/forge/{mc_version}-{loader_version}"
@@ -400,7 +408,7 @@ def install_neoforge(game_dir, mc_version, loader_version=None, status_cb=None):
 
     new_id = f"neoforge-{loader_version}"
     if new_id in installed_ids(game_dir):
-        raise LoaderError(f"版本 {new_id} 已安装，无需重复安装")
+        raise AlreadyInstalledError(new_id)
 
     # 多源：BMCLAPI → NeoForge 官方 maven（installerPath 形如
     # /maven/net/neoforged/neoforge/x/y-installer.jar）

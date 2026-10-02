@@ -23,6 +23,8 @@ _DEFAULTS = {
     "jvm_args": "",           # 追加 JVM 参数（如 -XX:+UseG1GC）
     "java_path": "",          # 全局自定义 java.exe，留空自动检测
     "per_version_java": {},   # {版本id: java.exe 路径}，优先于全局
+    "isolation": False,       # 版本隔离：游戏数据（存档/模组/配置）放进版本目录
+    "per_version_isolation": {},  # {版本id: True/False}，覆盖全局隔离设置
 }
 
 
@@ -44,6 +46,8 @@ class Settings:
         # 保证嵌套 dict 类型正确
         if not isinstance(self.data.get("per_version_java"), dict):
             self.data["per_version_java"] = {}
+        if not isinstance(self.data.get("per_version_isolation"), dict):
+            self.data["per_version_isolation"] = {}
 
     def save(self):
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -67,4 +71,20 @@ class Settings:
             pv[vid] = path
         else:
             pv.pop(vid, None)
+        self.save()
+
+    def isolation_for(self, vid):
+        """某版本是否启用版本隔离：版本专属覆盖 > 全局开关"""
+        override = self.data["per_version_isolation"].get(vid)
+        if override is not None:
+            return bool(override)
+        return bool(self.data.get("isolation"))
+
+    def set_isolation_for(self, vid, state):
+        """设置版本专属隔离：state=None 跟随全局，True/False 强制开/关"""
+        pv = self.data["per_version_isolation"]
+        if state is None:
+            pv.pop(vid, None)
+        else:
+            pv[vid] = bool(state)
         self.save()

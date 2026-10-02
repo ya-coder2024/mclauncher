@@ -172,21 +172,27 @@ class VersionDownloadTask(DownloadTask):
 
 
 class PackInstallTask(DownloadTask):
-    """下载并安装 Modrinth 整合包"""
+    """下载并安装 Modrinth 整合包。version 为空时自动选最新正式版"""
 
-    def __init__(self, project):
-        super().__init__("pack", project["title"])
+    def __init__(self, project, version=None):
+        name = project["title"]
+        if version:
+            name += f" {version.get('version_number', '')}"
+        super().__init__("pack", name)
         self.project = project
+        self.version = version
         self.instance = None
 
     def _do_run(self):
         import tempfile
-        # 选版本
-        versions = mod_repo.list_versions(self.project["project_id"])
-        if not versions:
-            raise RuntimeError("该整合包没有可用版本")
-        version = next((v for v in versions
-                        if v.get("version_type") == "release"), versions[0])
+        # 选版本：未指定时优先最新正式版
+        version = self.version
+        if version is None:
+            versions = mod_repo.list_versions(self.project["project_id"])
+            if not versions:
+                raise RuntimeError("该整合包没有可用版本")
+            version = next((v for v in versions
+                            if v.get("version_type") == "release"), versions[0])
         # 下载 mrpack
         mr = next((f for f in version.get("files", [])
                    if f.get("filename", "").endswith(".mrpack")), None)

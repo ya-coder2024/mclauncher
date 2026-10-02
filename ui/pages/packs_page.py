@@ -4,7 +4,7 @@
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
-    QListWidget, QListWidgetItem, QProgressBar, QFrame,
+    QListWidget, QListWidgetItem, QProgressBar, QFrame, QComboBox,
 )
 
 from core import mod_repo
@@ -28,6 +28,22 @@ class SearchThread(QThread):
             self.failed.emit(str(e))
 
 
+class VersionsThread(QThread):
+    """后台加载某整合包的全部版本"""
+    found = pyqtSignal(list)
+    failed = pyqtSignal(str)
+
+    def __init__(self, project_id):
+        super().__init__()
+        self.project_id = project_id
+
+    def run(self):
+        try:
+            self.found.emit(mod_repo.list_versions(self.project_id))
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
 class PacksPage(QWidget):
     installed_changed = pyqtSignal()  # 安装完成后通知主页刷新
 
@@ -35,6 +51,7 @@ class PacksPage(QWidget):
         super().__init__()
         self._results = []
         self._searcher = None
+        self._ver_loader = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 24, 28, 24)
@@ -58,7 +75,7 @@ class PacksPage(QWidget):
         self.list.setSelectionMode(self.list.SingleSelection)
         root.addWidget(self.list, 1)
 
-        # ---- 底部：进度 + 状态 + 安装 ----
+        # ---- 底部：进度 + 状态 + 版本选择 + 安装 ----
         bottom = QHBoxLayout()
         bottom.setSpacing(12)
         self.progress = QProgressBar(objectName="downloadProgress")
@@ -68,6 +85,10 @@ class PacksPage(QWidget):
         bottom.addWidget(self.progress, 1)
         self.status_label = QLabel("输入关键词搜索整合包", objectName="cardDesc")
         bottom.addWidget(self.status_label)
+        self.ver_combo = QComboBox()
+        self.ver_combo.setFixedWidth(240)
+        self.ver_combo.hide()
+        bottom.addWidget(self.ver_combo)
         self.btn_install = QPushButton("安装所选整合包", objectName="small")
         self.btn_install.setEnabled(False)
         self.btn_install.clicked.connect(self._install_selected)
@@ -127,7 +148,40 @@ class PacksPage(QWidget):
         return w
 
     def _on_select(self):
-        self.btn_install.setEnabled(bool(self.list.selectedItems()))
+        items = self.list.selectedItems()
+        has = bool(items)
+        self.btn_install.setEnabled(False)
+        self.ver_combo.hide()
+        self.ver_combo.clear()
+        if not has:
+            return
+        # 异步加载该整合包的全部版本
+        project = items[0].data(Qt.UserRole)
+        self._pending_pid = project["project_id"]
+        self._ver_loader = VersionsThread(project["project_id"])
+        self._ver_loader.found.connect(self._on_versions)
+        self._ver_loader.failed.connect(lambda _e: self.btn_install.setEnabled(True))
+        self._ver_loader.start()
+
+    def _on_versions(self, versions):
+        self._ver_loader = None
+        # 快速切换选择时丢弃过期结果
+        items = self.list.selectedItems()
+        if not items or items[0].data(Qt.UserRole)["project_id"] != getattr(self, "_pending_pid", None):
+            return
+        # 优先默认选中最新 release
+        default_idx = next(
+            (i for i, v in enumerate(versions)
+             if v.get("version_type") == "release"), 0)
+        _TYPE_CN = {"release": "正式版", "beta": "测试版", "alpha": "预览版"}
+        for v in versions:
+            gvs = ", ".join(v.get("game_versions", [])[:3])
+            vt = _TYPE_CN.get(v.get("version_type"), v.get("version_type", ""))
+            self.ver_combo.addItem(
+                f"{v.get('version_number', '?')}（{vt} · MC {gvs}）", v)
+        self.ver_combo.setCurrentIndex(default_idx)
+        self.ver_combo.show()
+        self.btn_install.setEnabled(bool(versions))
 
     # ---------- 安装（走全局下载队列，任务页可暂停/取消） ----------
     def _install_selected(self):
@@ -135,8 +189,9 @@ class PacksPage(QWidget):
         if not items:
             return
         project = items[0].data(Qt.UserRole)
-        task = DownloadQueue.instance().add(PackInstallTask(project))
-        self.status_label.setText(f"{project['title']} 已加入下载队列，任务页可管理")
+        version = self.ver_combo.currentData()  # None 时任务内自动选最新
+        task = DownloadQueue.instance().add(PackInstallTask(project, version))
+        self.status_label.setText(f"{task.name} 已加入下载队列，任务页可管理")
         self.progress.show()
         self.progress.setValue(0)
         task.updated.connect(lambda t=task: self.progress.setValue(t.progress))

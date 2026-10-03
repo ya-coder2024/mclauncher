@@ -168,7 +168,7 @@ class MainWindow(QMainWindow):
         home_page.crash_detected.connect(log_page.show_crash_analysis)
 
         # 侧边栏底部版本号
-        ver = QLabel("PCL 风格 v0.9", objectName="versionTag")
+        ver = QLabel("PCL 风格 v1.0", objectName="versionTag")
         ver.setAlignment(Qt.AlignCenter)
         side_layout.addWidget(ver)
 

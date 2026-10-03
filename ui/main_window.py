@@ -12,6 +12,7 @@ from ui.pages.home_page import HomePage
 from ui.pages.download_page import DownloadPage
 from ui.pages.mods_page import ModsPage
 from ui.pages.packs_page import PacksPage
+from ui.pages.resources_page import ResourcesPage
 from ui.pages.tasks_page import TasksPage
 from ui.pages.log_page import LogPage
 from ui.pages.settings_page import SettingsPage
@@ -136,6 +137,7 @@ class MainWindow(QMainWindow):
             ("下载", "download", DownloadPage),
             ("模组", "mods", ModsPage),
             ("整合包", "packs", PacksPage),
+            ("资源", "resources", ResourcesPage),
             ("任务", "tasks", TasksPage),
             ("日志", "logs", LogPage),
             ("设置", "settings", SettingsPage),

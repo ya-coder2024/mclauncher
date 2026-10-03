@@ -18,6 +18,7 @@ from ui import theme
 from core.config import GAME_DIR
 from core import mod_repo
 from core import launcher as launcher_core
+from core.icon_cache import IconManager
 from core.downloader import download_file
 
 _LOADER_TABS = [("全部", None), ("Fabric", "fabric"), ("Forge", "forge"),
@@ -316,7 +317,16 @@ class DownloadTab(QWidget):
         lay.setSpacing(10)
 
         icon_label = QLabel()
-        icon_label.setPixmap(theme.icon("mods", color=theme.COLORS["accent"]).pixmap(24, 24))
+        icon_label.setFixedSize(32, 32)
+        icon_label.setAlignment(Qt.AlignCenter)
+        pm = IconManager.instance().get(h.get("icon_url"), 32)
+        if pm:
+            icon_label.setPixmap(pm)
+        else:
+            icon_label.setPixmap(theme.icon("mods", color=theme.COLORS["accent"]).pixmap(24, 24))
+            if h.get("icon_url"):
+                IconManager.instance().loaded.connect(self._on_icon_loaded)
+        icon_label.setProperty("icon_url", h.get("icon_url") or "")
         lay.addWidget(icon_label)
 
         title = QLabel(h["title"], objectName="cardTitle")
@@ -337,6 +347,16 @@ class DownloadTab(QWidget):
         dl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         lay.addWidget(dl)
         return w
+
+    def _on_icon_loaded(self, url, pixmap):
+        """图标下载完成后刷新列表中对应行"""
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            w = self.list.itemWidget(it)
+            if w:
+                lbl = w.findChild(QLabel)
+                if lbl and lbl.property("icon_url") == url:
+                    lbl.setPixmap(pixmap)
 
     # ---------- 安装 ----------
     def _start_install(self, _item=None):

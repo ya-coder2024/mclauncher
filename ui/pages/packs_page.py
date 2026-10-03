@@ -9,6 +9,8 @@ from PyQt5.QtWidgets import (
 
 from core import mod_repo
 from core.download_queue import DownloadQueue, PackInstallTask, TaskState
+from core.icon_cache import IconManager
+from ui import theme
 
 
 class SearchThread(QThread):
@@ -137,6 +139,20 @@ class PacksPage(QWidget):
         v.setSpacing(4)
         head = QHBoxLayout()
         head.setSpacing(10)
+
+        icon_label = QLabel()
+        icon_label.setFixedSize(32, 32)
+        icon_label.setAlignment(Qt.AlignCenter)
+        pm = IconManager.instance().get(p.get("icon_url"), 32)
+        if pm:
+            icon_label.setPixmap(pm)
+        else:
+            icon_label.setPixmap(theme.icon("packs", color=theme.COLORS["accent"]).pixmap(24, 24))
+            if p.get("icon_url"):
+                IconManager.instance().loaded.connect(self._on_icon_loaded)
+        icon_label.setProperty("icon_url", p.get("icon_url") or "")
+        head.addWidget(icon_label)
+
         head.addWidget(QLabel(p["title"], objectName="cardTitle"))
         head.addWidget(QLabel(f"by {p['author']}", objectName="cardDesc"))
         head.addStretch()
@@ -146,6 +162,15 @@ class PacksPage(QWidget):
         v.addLayout(head)
         v.addWidget(QLabel(p["description"], objectName="cardDesc"))
         return w
+
+    def _on_icon_loaded(self, url, pixmap):
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            w = self.list.itemWidget(it)
+            if w:
+                lbl = w.findChild(QLabel)
+                if lbl and lbl.property("icon_url") == url:
+                    lbl.setPixmap(pixmap)
 
     def _on_select(self):
         items = self.list.selectedItems()

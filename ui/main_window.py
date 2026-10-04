@@ -1,13 +1,19 @@
 # -*- coding: utf-8 -*-
 """主窗口：无边框窗口 + 自绘标题栏 + PCL 风格侧边栏 + 页面堆叠"""
 
-from PyQt5.QtCore import QSize, Qt, QPoint
+import sys
+from pathlib import Path
+
+from PyQt5.QtCore import QSize, Qt, QPoint, QTimer
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel,
-    QPushButton, QFrame, QStackedWidget, QSizeGrip,
+    QPushButton, QFrame, QStackedWidget, QSizeGrip, QMessageBox,
+    QProgressDialog,
 )
 
 from ui import theme
+from core.config import APP_VERSION
+from core import updater
 from ui.pages.home_page import HomePage
 from ui.pages.download_page import DownloadPage
 from ui.pages.mods_page import ModsPage
@@ -168,7 +174,7 @@ class MainWindow(QMainWindow):
         home_page.crash_detected.connect(log_page.show_crash_analysis)
 
         # 侧边栏底部版本号
-        ver = QLabel("PCL 风格 v1.1", objectName="versionTag")
+        ver = QLabel(f"PCL 风格 {APP_VERSION}", objectName="versionTag")
         ver.setAlignment(Qt.AlignCenter)
         side_layout.addWidget(ver)
 
@@ -183,6 +189,75 @@ class MainWindow(QMainWindow):
         side_layout.addWidget(grip)
 
         self.nav_buttons[0].setChecked(True)
+
+        # ---- 自动检查更新（仅打包版；启动 4 秒后后台查询，失败静默） ----
+        self._update_check = None
+        self._update_download = None
+        if updater.is_packaged():
+            QTimer.singleShot(4000, self._check_update)
+
+    def _check_update(self):
+        if self._update_check is not None:
+            return
+        self._update_check = updater.CheckUpdateThread(APP_VERSION)
+        self._update_check.found.connect(self._on_update_found)
+        self._update_check.failed.connect(lambda _e: setattr(self, "_update_check", None))
+        self._update_check.start()
+
+    def _on_update_found(self, tag, url, notes):
+        self._update_check = None
+        preview = notes.strip()
+        if len(preview) > 600:
+            preview = preview[:600] + "…"
+        ret = QMessageBox.question(
+            self, "发现新版本",
+            f"检测到新版本 {tag}（当前 {APP_VERSION}），是否立即下载更新？\n\n{preview}",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if ret != QMessageBox.Yes:
+            return
+        self._download_update(tag, url)
+
+    def _download_update(self, tag, url):
+        from core.config import BASE_DIR
+        new_exe = BASE_DIR / "PCLLauncher.new.exe"
+        self._update_dlg = QProgressDialog(f"正在下载 {tag}…", "取消", 0, 100, self)
+        self._update_dlg.setWindowTitle("更新启动器")
+        self._update_dlg.setWindowModality(Qt.ApplicationModal)
+        self._update_dlg.setMinimumDuration(0)
+        self._update_dlg.canceled.connect(self._cancel_update_download)
+
+        self._update_download = updater.DownloadUpdateThread(url, new_exe)
+        self._update_download.progress.connect(self._on_update_progress)
+        self._update_download.done.connect(self._on_update_downloaded)
+        self._update_download.failed.connect(self._on_update_failed)
+        self._update_download.start()
+
+    def _cancel_update_download(self):
+        if self._update_download is not None:
+            self._update_download.stop()
+
+    def _on_update_progress(self, got, total):
+        if total > 0:
+            self._update_dlg.setValue(int(got * 100 / total))
+            mb = got / 1048576
+            self._update_dlg.setLabelText(
+                f"正在下载… {mb:.1f} MB / {total/1048576:.1f} MB")
+
+    def _on_update_downloaded(self, path):
+        self._update_download = None
+        self._update_dlg.setValue(100)
+        old_exe = Path(sys.executable) if updater.is_packaged() else Path(path)
+        updater.launch_updater(old_exe, path)
+        QMessageBox.information(self, "更新已就绪",
+                                "下载完成，启动器即将关闭并自动重启完成更新。")
+        from PyQt5.QtWidgets import QApplication
+        QApplication.closeAllWindows()
+        QApplication.quit()
+
+    def _on_update_failed(self, err):
+        self._update_download = None
+        self._update_dlg.close()
+        QMessageBox.warning(self, "更新失败", f"下载更新失败：{err}\n稍后可重试或手动下载。")
 
     def switch_page(self, index):
         """切换页面并同步导航按钮选中态"""

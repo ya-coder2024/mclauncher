@@ -43,6 +43,16 @@ def search_modpacks(query="", mc_version=None, offset=0, limit=20):
     return _search("modpack", query, mc_version, None, offset, limit)
 
 
+def search_resourcepacks(query="", mc_version=None, offset=0, limit=20):
+    """搜索资源包（project_type=resourcepack），返回结构同 search_mods"""
+    return _search("resourcepack", query, mc_version, None, offset, limit)
+
+
+def search_shaders(query="", mc_version=None, offset=0, limit=20):
+    """搜索光影（project_type=shader），返回结构同 search_mods"""
+    return _search("shader", query, mc_version, None, offset, limit)
+
+
 def _search(project_type, query, mc_version, loader, offset, limit):
     facets = [[f"project_type:{project_type}"]]
     if mc_version:

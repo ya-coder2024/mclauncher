@@ -89,10 +89,15 @@ class IconManager(QObject):
         self._pending[url] = th
         th.done.connect(self._on_done)
         th.failed.connect(self._on_failed)
+        # 关键：线程结束后再由 Qt 安全销毁。
+        # 不能在 done/failed 槽里直接丢弃引用——发射信号时工作线程可能
+        # 尚未完全结束，此时析构 QThread 会造成 use-after-free 崩溃。
+        th.setParent(self)
+        th.finished.connect(th.deleteLater)
         th.start()
 
     def _on_done(self, url, data):
-        self._pending.pop(url, None)
+        self._pending.pop(url, None)  # QThread 对象由 finished→deleteLater 回收
         k = _key(url)
         try:
             (_CACHE_DIR / f"{k}.img").write_bytes(data)

@@ -11,6 +11,7 @@ from core.config import GAME_DIR
 from core.version_manifest import fetch_manifest
 from core.download_queue import DownloadQueue, VersionDownloadTask, TaskState
 from core import loader_install
+from core.safe_thread import start_worker
 
 _LOADER_CHOICES = [("Fabric（轻量，更新快）", "fabric"),
                    ("Quilt（Fabric 分支）", "quilt"),
@@ -133,7 +134,7 @@ class DownloadPage(QWidget):
         self.loader = ManifestLoader()
         self.loader.loaded.connect(self._on_manifest)
         self.loader.failed.connect(self._on_manifest_failed)
-        self.loader.start()
+        start_worker(self.loader, parent=self)
 
     def _on_manifest(self, source, versions):
         self._versions = versions
@@ -204,7 +205,7 @@ class DownloadPage(QWidget):
         self._loader_worker.status.connect(self.status_label.setText)
         self._loader_worker.installed.connect(self._on_loader_done)
         self._loader_worker.failed.connect(self._on_loader_fail)
-        self._loader_worker.start()
+        start_worker(self._loader_worker, parent=self)
 
     def _on_loader_done(self, new_id):
         self._loader_worker = None

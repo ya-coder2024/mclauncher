@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
 )
 
 from core import auth
+from core.safe_thread import start_worker
 
 _TYPE_LABEL = {"offline": "离线", "yggdrasil": "外置", "microsoft": "正版"}
 
@@ -131,7 +132,7 @@ class AccountDialog(QDialog):
         worker.ok.connect(lambda a: self._succeed(a))
         worker.fail.connect(self.status.setText)
         self._workers.append(worker)
-        worker.start()
+        start_worker(worker, parent=self)
 
     # ---------------- 正版（微软设备码） ----------------
     def _tab_microsoft(self):
@@ -191,7 +192,7 @@ class AccountDialog(QDialog):
         worker.ok.connect(self._on_ms_started)
         worker.fail.connect(self._ms_failed)
         self._workers.append(worker)
-        worker.start()
+        start_worker(worker, parent=self)
 
     def _on_ms_started(self, device):
         self.ms_uri.setText(device["verification_uri"])
@@ -204,7 +205,7 @@ class AccountDialog(QDialog):
         finisher.ok.connect(lambda a: self._succeed(a))
         finisher.fail.connect(self._ms_failed)
         self._workers.append(finisher)
-        finisher.start()
+        start_worker(finisher, parent=self)
 
     def _ms_failed(self, err):
         self.status.setText(err)

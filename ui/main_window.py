@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
 from ui import theme
 from core.config import APP_VERSION
 from core import updater
+from core.safe_thread import start_worker
 from ui.pages.home_page import HomePage
 from ui.pages.download_page import DownloadPage
 from ui.pages.mods_page import ModsPage
@@ -202,7 +203,7 @@ class MainWindow(QMainWindow):
         self._update_check = updater.CheckUpdateThread(APP_VERSION)
         self._update_check.found.connect(self._on_update_found)
         self._update_check.failed.connect(lambda _e: setattr(self, "_update_check", None))
-        self._update_check.start()
+        start_worker(self._update_check, parent=self)
 
     def _on_update_found(self, tag, url, notes):
         self._update_check = None
@@ -230,7 +231,7 @@ class MainWindow(QMainWindow):
         self._update_download.progress.connect(self._on_update_progress)
         self._update_download.done.connect(self._on_update_downloaded)
         self._update_download.failed.connect(self._on_update_failed)
-        self._update_download.start()
+        start_worker(self._update_download, parent=self)
 
     def _cancel_update_download(self):
         if self._update_download is not None:

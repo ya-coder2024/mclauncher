@@ -17,6 +17,7 @@ from core.config import GAME_DIR, Settings
 from core import mod_repo
 from core.downloader import download_file, file_ok
 from core.icon_cache import IconManager
+from core.safe_thread import start_worker
 from ui import theme
 
 
@@ -139,7 +140,7 @@ class _ResourceTab(QWidget):
         self.status_label.setText("正在扫描…")
         self._scan = _ScanThread(self._base / self._kind, self._kind)
         self._scan.done.connect(self._on_scanned)
-        self._scan.start()
+        start_worker(self._scan, parent=self)
 
     def _on_scanned(self, items):
         self._scan = None
@@ -241,6 +242,9 @@ class DownloadResourceTab(QWidget):
         self._downloader = None
         self._base = Path(GAME_DIR)
 
+        # 全局图标信号只连接一次（槽无状态地遍历当前行）
+        IconManager.instance().loaded.connect(self._on_icon_loaded)
+
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 12, 0, 0)
         root.setSpacing(10)
@@ -282,7 +286,7 @@ class DownloadResourceTab(QWidget):
         self._searcher = _SearchThread(self._kind, q)
         self._searcher.found.connect(self._on_found)
         self._searcher.failed.connect(self._on_search_failed)
-        self._searcher.start()
+        start_worker(self._searcher, parent=self)
 
     def _on_found(self, hits, total):
         self._searcher = None
@@ -315,8 +319,6 @@ class DownloadResourceTab(QWidget):
         else:
             icon_label.setPixmap(
                 theme.icon("resources", color=theme.COLORS["accent"]).pixmap(24, 24))
-            if h.get("icon_url"):
-                IconManager.instance().loaded.connect(self._on_icon_loaded)
         icon_label.setProperty("icon_url", h.get("icon_url") or "")
         lay.addWidget(icon_label)
 
@@ -361,7 +363,7 @@ class DownloadResourceTab(QWidget):
         self._downloader.status.connect(self.status_label.setText)
         self._downloader.done.connect(self._on_downloaded)
         self._downloader.failed.connect(self._on_download_failed)
-        self._downloader.start()
+        start_worker(self._downloader, parent=self)
 
     def _on_downloaded(self, path):
         self._downloader = None

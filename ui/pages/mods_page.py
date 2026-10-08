@@ -20,6 +20,7 @@ from core import mod_repo
 from core import launcher as launcher_core
 from core.icon_cache import IconManager
 from core.downloader import download_file
+from core.safe_thread import start_worker
 
 _LOADER_TABS = [("全部", None), ("Fabric", "fabric"), ("Forge", "forge"),
                 ("Quilt", "quilt"), ("NeoForge", "neoforge")]
@@ -172,6 +173,10 @@ class DownloadTab(QWidget):
         self._installer = None
         self._target_dir = None  # None = 全局 mods 目录
 
+        # 全局图标信号只连接一次（槽无状态地遍历当前行）；
+        # 切勿在每次列表重建的 _make_row 中反复连接。
+        IconManager.instance().loaded.connect(self._on_icon_loaded)
+
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 12, 0, 0)
         root.setSpacing(12)
@@ -285,7 +290,7 @@ class DownloadTab(QWidget):
         self._search_thread = SearchThread(q, mc, self._loader, self._offset)
         self._search_thread.done.connect(self._on_results)
         self._search_thread.failed.connect(self._on_search_failed)
-        self._search_thread.start()
+        start_worker(self._search_thread, parent=self)
 
     def _on_results(self, hits, total):
         self._search_thread = None
@@ -324,8 +329,6 @@ class DownloadTab(QWidget):
             icon_label.setPixmap(pm)
         else:
             icon_label.setPixmap(theme.icon("mods", color=theme.COLORS["accent"]).pixmap(24, 24))
-            if h.get("icon_url"):
-                IconManager.instance().loaded.connect(self._on_icon_loaded)
         icon_label.setProperty("icon_url", h.get("icon_url") or "")
         lay.addWidget(icon_label)
 
@@ -372,7 +375,7 @@ class DownloadTab(QWidget):
         self._version_thread = VersionLoadThread(hit["project_id"], mc, self._loader)
         self._version_thread.done.connect(lambda vs, h=hit: self._on_versions(vs, h))
         self._version_thread.failed.connect(self._on_version_failed)
-        self._version_thread.start()
+        start_worker(self._version_thread, parent=self)
 
     def _on_versions(self, versions, hit):
         self._version_thread = None
@@ -381,7 +384,7 @@ class DownloadTab(QWidget):
             self._version_thread = VersionLoadThread(hit["project_id"], None, None)
             self._version_thread.done.connect(self._pick_or_warn)
             self._version_thread.failed.connect(self._on_version_failed)
-            self._version_thread.start()
+            start_worker(self._version_thread, parent=self)
             return
         self._pick_or_warn(versions)
 
@@ -412,7 +415,7 @@ class DownloadTab(QWidget):
         self._installer.progress.connect(self.progress.setValue)
         self._installer.failed.connect(self._on_install_failed)
         self._installer.installed.connect(self._on_installed)
-        self._installer.start()
+        start_worker(self._installer, parent=self)
 
     def set_target(self, mods_root):
         """切换安装目标（None = 全局 mods 目录）"""
@@ -507,7 +510,7 @@ class InstalledTab(QWidget):
         self._scan = _ScanThread(self._dir)
         self._scan.done.connect(self._on_scanned)
         self._scan.failed.connect(self._on_scan_failed)
-        self._scan.start()
+        start_worker(self._scan, parent=self)
 
     def _on_scanned(self, mods):
         self._scan = None

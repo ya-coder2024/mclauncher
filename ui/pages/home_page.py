@@ -17,6 +17,7 @@ from core.version_manifest import fetch_manifest
 from core.download_manager import DownloadManager
 from core.auth import AccountStore
 from core.launcher import LaunchWorker, scan_mods
+from core.safe_thread import start_worker
 
 _TYPE_LABEL = {"offline": "离线", "yggdrasil": "外置", "microsoft": "正版"}
 
@@ -208,7 +209,7 @@ class HomePage(QWidget):
             self._manifest_loader = _ManifestLoader()
             self._manifest_loader.loaded.connect(self._fill_remote)
             self._manifest_loader.failed.connect(self._on_manifest_failed)
-            self._manifest_loader.start()
+            start_worker(self._manifest_loader, parent=self)
 
     def _fill_remote(self, source, versions):
         self._manifest = versions
@@ -320,7 +321,7 @@ class HomePage(QWidget):
         self._worker.crashed.connect(self._on_crashed)
         self._worker.game_closed.connect(self._on_game_closed)
         self.launch_started.emit(vid)
-        self._worker.start()
+        start_worker(self._worker, parent=self)
 
     def _on_launched(self, pid):
         self.launch_status.setText(
@@ -360,7 +361,7 @@ class HomePage(QWidget):
                 self._manifest_loader = _ManifestLoader()
                 self._manifest_loader.loaded.connect(self._on_manifest_retry)
                 self._manifest_loader.failed.connect(self._on_download_failed)
-                self._manifest_loader.start()
+                start_worker(self._manifest_loader, parent=self)
             return
         url = next((v["url"] for v in self._manifest if v["id"] == vid), None)
         if not url:
@@ -373,7 +374,7 @@ class HomePage(QWidget):
         self._downloader.progress.connect(self.launch_progress.setValue)
         self._downloader.finished_ok.connect(self._on_downloaded)
         self._downloader.failed.connect(self._on_download_failed)
-        self._downloader.start()
+        start_worker(self._downloader, parent=self)
 
     def _on_manifest_retry(self, source, versions):
         self._manifest = versions

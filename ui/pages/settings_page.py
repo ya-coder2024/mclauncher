@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
 
 from core.config import GAME_DIR, Settings
 from core.java_finder import find_javas
+from core.safe_thread import start_worker
 
 
 class JavaScanThread(QThread):
@@ -239,7 +240,7 @@ class SettingsPage(QWidget):
         self.btn_rescan.setEnabled(False)
         self._scan_thread = JavaScanThread()
         self._scan_thread.found.connect(self._on_java_found)
-        self._scan_thread.start()
+        start_worker(self._scan_thread, parent=self)
 
     def _on_java_found(self, javas):
         self._scan_thread = None

@@ -11,6 +11,7 @@ from core import mod_repo
 from core.download_queue import DownloadQueue, PackInstallTask, TaskState
 from core.icon_cache import IconManager
 from ui import theme
+from core.safe_thread import start_worker
 
 
 class SearchThread(QThread):
@@ -54,6 +55,9 @@ class PacksPage(QWidget):
         self._results = []
         self._searcher = None
         self._ver_loader = None
+
+        # 全局图标信号只连接一次（槽无状态地遍历当前行）
+        IconManager.instance().loaded.connect(self._on_icon_loaded)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 24, 28, 24)
@@ -111,7 +115,7 @@ class PacksPage(QWidget):
         self._searcher = SearchThread(self.search_box.text().strip())
         self._searcher.found.connect(self._on_found)
         self._searcher.failed.connect(self._on_search_failed)
-        self._searcher.start()
+        start_worker(self._searcher, parent=self)
 
     def _on_found(self, hits, total):
         self._searcher = None
@@ -148,8 +152,6 @@ class PacksPage(QWidget):
             icon_label.setPixmap(pm)
         else:
             icon_label.setPixmap(theme.icon("packs", color=theme.COLORS["accent"]).pixmap(24, 24))
-            if p.get("icon_url"):
-                IconManager.instance().loaded.connect(self._on_icon_loaded)
         icon_label.setProperty("icon_url", p.get("icon_url") or "")
         head.addWidget(icon_label)
 
@@ -186,7 +188,7 @@ class PacksPage(QWidget):
         self._ver_loader = VersionsThread(project["project_id"])
         self._ver_loader.found.connect(self._on_versions)
         self._ver_loader.failed.connect(lambda _e: self.btn_install.setEnabled(True))
-        self._ver_loader.start()
+        start_worker(self._ver_loader, parent=self)
 
     def _on_versions(self, versions):
         self._ver_loader = None

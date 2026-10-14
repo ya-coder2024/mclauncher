@@ -15,7 +15,7 @@ else:
 GAME_DIR = BASE_DIR / ".minecraft"
 
 # 当前启动器版本（发版时更新；与 GitHub Release tag 一致）
-APP_VERSION = "v1.1"
+APP_VERSION = "v1.2"
 
 _SETTINGS_PATH = GAME_DIR / "launcher_settings.json"
 

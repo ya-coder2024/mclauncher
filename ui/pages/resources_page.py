@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QUrl
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QTabWidget, QMessageBox, QLineEdit,
@@ -463,6 +463,74 @@ class ResourcesPage(QWidget):
         if tab is not None:
             tab.refresh()
 
+    # ---------- 拖入安装 ----------
+
+    _TAB_KIND = ["resourcepacks", "shaderpacks", "saves"]
+
+    def dragEnterEvent(self, e):
+        if not e.mimeData().hasUrls():
+            e.ignore()
+            return
+        urls = e.mimeData().urls()
+        idx = self.tabs.currentIndex()
+        kind = self._TAB_KIND[idx] if idx < len(self._TAB_KIND) else None
+        if kind in ("resourcepacks", "shaderpacks"):
+            if any(u.toLocalFile().lower().endswith(".zip")
+                   or Path(u.toLocalFile()).is_dir() for u in urls):
+                e.acceptProposedAction()
+                return
+        elif kind == "saves":
+            if any(Path(u.toLocalFile()).is_dir() for u in urls):
+                e.acceptProposedAction()
+                return
+        e.ignore()
+
+    def dropEvent(self, e):
+        idx = self.tabs.currentIndex()
+        kind = self._TAB_KIND[idx] if idx < len(self._TAB_KIND) else None
+        if kind not in self._TAB_KIND:
+            e.ignore()
+            return
+        vid = self.target_combo.currentData() or ""
+        target_root = (Path(GAME_DIR) / "versions" / vid) if vid else Path(GAME_DIR)
+        dest_dir = target_root / kind
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        copied, skipped = [], []
+        for u in e.mimeData().urls():
+            src = Path(u.toLocalFile())
+            if not src.exists():
+                continue
+            fname = src.name
+            dst = dest_dir / fname
+            if dst.exists():
+                skipped.append(fname)
+                continue
+            try:
+                if src.is_file():
+                    shutil.copy2(src, dst)
+                else:
+                    shutil.copytree(src, dst)
+                copied.append(fname)
+            except OSError:
+                skipped.append(fname)
+        tab = self.tabs.widget(idx)
+        if copied:
+            tab.refresh()
+            if hasattr(tab, "installed_tab"):
+                tab.installed_tab.status_label.setText(
+                    f"拖入：{', '.join(copied)}（已放到 {dest_dir}）")
+            else:
+                tab.status_label.setText(
+                    f"拖入：{', '.join(copied)}（已放到 {dest_dir}）")
+        if skipped and not copied:
+            msg = f"已存在：{', '.join(skipped)}"
+            if hasattr(tab, "installed_tab"):
+                tab.installed_tab.status_label.setText(msg)
+            else:
+                tab.status_label.setText(msg)
+        e.acceptProposedAction()
+
     def showEvent(self, e):
         super().showEvent(e)
         self.refresh_targets()
+        self.setAcceptDrops(True)

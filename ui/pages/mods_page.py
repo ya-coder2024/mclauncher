@@ -5,9 +5,10 @@
 """
 
 import re
+import shutil
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMimeData, QUrl
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QListWidget, QListWidgetItem, QProgressBar, QComboBox, QDialog,
@@ -635,6 +636,53 @@ class ModsPage(QWidget):
         self.tab_download.changed.connect(self.installed_changed.emit)
         self.tab_installed.changed.connect(self.installed_changed.emit)
         self.refresh_targets()
+        self.setAcceptDrops(True)
+
+    # ---------- 拖入安装 ----------
+
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls():
+            urls = e.mimeData().urls()
+            if any(u.toLocalFile().lower().endswith(".jar") for u in urls):
+                e.acceptProposedAction()
+                return
+        e.ignore()
+
+    def dropEvent(self, e):
+        files = [u.toLocalFile() for u in e.mimeData().urls()
+                 if u.toLocalFile().lower().endswith(".jar")]
+        if not files:
+            e.ignore()
+            return
+        vid = self.target_combo.currentData() or ""
+        target_root = (Path(GAME_DIR) / "versions" / vid) if vid else Path(GAME_DIR)
+        mods_dir = target_root / "mods"
+        mods_dir.mkdir(parents=True, exist_ok=True)
+        copied, skipped = [], []
+        for src in files:
+            fname = Path(src).name
+            dst = mods_dir / fname
+            if dst.is_file():
+                skipped.append(fname)
+            else:
+                try:
+                    shutil.copy2(src, dst)
+                    copied.append(fname)
+                except OSError:
+                    skipped.append(fname)
+        # 反馈
+        if copied:
+            self.tab_installed.refresh()
+            self.tab_installed.status_label.setText(
+                f"拖入安装：{', '.join(copied)}（已放到 {mods_dir}）")
+            self.installed_changed.emit()
+        if skipped and not copied:
+            self.tab_installed.status_label.setText(
+                f"已存在：{', '.join(skipped)}")
+        elif skipped:
+            self.tab_installed.status_label.setText(
+                self.tab_installed.status_label.text() + f"；跳过已存在：{', '.join(skipped)}")
+        e.acceptProposedAction()
 
     def refresh_targets(self):
         """刷新管理位置下拉：全局目录 + 各本地版本（隔离版本标注）"""

@@ -5,7 +5,11 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QListWidget, QListWidgetItem, QProgressBar, QFrame, QComboBox,
+    QMessageBox,
 )
+from pathlib import Path
+import json
+import shutil
 
 from core.config import GAME_DIR
 from core.version_manifest import fetch_manifest
@@ -24,7 +28,55 @@ _TYPE_NAMES = {
     "old_beta": "古老",
     "old_alpha": "古老",
 }
-_TABS = [("全部", None), ("正式版", "release"), ("快照", "snapshot"), ("古老", "old")]
+
+_TAB_INSTALLED = "__installed__"
+_TABS = [("全部", None), ("正式版", "release"), ("快照", "snapshot"),
+         ("古老", "old"), ("已装", _TAB_INSTALLED)]
+
+
+def _dir_size(path):
+    """递归统计目录大小（字节），出错按 0 处理"""
+    total = 0
+    for p in Path(path).rglob("*"):
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def _fmt_size(n):
+    if n >= 1024 ** 3:
+        return f"{n / 1024 ** 3:.2f} GB"
+    if n >= 1024 ** 2:
+        return f"{n / 1024 ** 2:.1f} MB"
+    return f"{n / 1024:.0f} KB"
+
+
+class LocalScanThread(QThread):
+    """扫描已装版本目录 + 磁盘占用，避免卡界面"""
+    loaded = pyqtSignal(list)
+
+    def run(self):
+        vroot = Path(GAME_DIR) / "versions"
+        items = []
+        if vroot.is_dir():
+            for d in sorted(vroot.iterdir(), key=lambda x: x.name.lower()):
+                if not d.is_dir() or not (d / f"{d.name}.json").is_file():
+                    continue
+                size = _dir_size(d)
+                # 是否为整合包实例（隔离目录内有 mods/saves 等游戏数据）
+                has_data = any((d / s).exists() for s in ("mods", "saves", "config"))
+                parent = ""
+                try:
+                    data = json.loads((d / f"{d.name}.json").read_text(encoding="utf-8"))
+                    parent = data.get("inheritsFrom", "")
+                except (OSError, ValueError):
+                    pass
+                items.append({"id": d.name, "size": size,
+                              "instance": has_data, "inherits": parent})
+        self.loaded.emit(items)
 
 
 class ManifestLoader(QThread):
@@ -68,6 +120,8 @@ class DownloadPage(QWidget):
         self._versions = []
         self._version_type = None
         self._loader_worker = None
+        self._local_items = []
+        self._scan_worker = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 24, 28, 24)
@@ -124,6 +178,11 @@ class DownloadPage(QWidget):
         self.btn_loader.setEnabled(False)
         self.btn_loader.clicked.connect(self._install_loader)
         bottom.addWidget(self.btn_loader)
+        self.btn_delete = QPushButton("删除所选版本", objectName="small")
+        self.btn_delete.setEnabled(False)
+        self.btn_delete.clicked.connect(self._delete_version)
+        self.btn_delete.hide()
+        bottom.addWidget(self.btn_delete)
         root.addLayout(bottom)
 
         self.list.itemSelectionChanged.connect(self._on_select)
@@ -149,7 +208,34 @@ class DownloadPage(QWidget):
         for i, b in enumerate(self._tab_buttons):
             b.setChecked(_TABS[i][1] == tab)
         self._version_type = tab
-        self._refresh_list()
+        installed = tab == _TAB_INSTALLED
+        # 已装模式：隐藏下载相关控件，显示删除
+        for w in (self.btn_download, self.loader_box, self.btn_loader):
+            w.setVisible(not installed)
+        self.btn_delete.setVisible(installed)
+        self.search_box.setVisible(not installed)
+        if installed:
+            self._scan_local()
+        else:
+            self._refresh_list()
+
+    def _scan_local(self):
+        if self._scan_worker is not None:
+            return
+        self.status_label.setText("正在扫描已装版本…")
+        self.list.clear()
+        self._scan_worker = LocalScanThread()
+        self._scan_worker.loaded.connect(self._on_local_scanned)
+        start_worker(self._scan_worker, parent=self)
+
+    def _on_local_scanned(self, items):
+        self._scan_worker = None
+        self._local_items = items
+        total = sum(i["size"] for i in items)
+        self.status_label.setText(
+            f"共 {len(items)} 个已装版本，合计 {_fmt_size(total)}（依赖库/资源为全局共享，未计入）")
+        if self._version_type == _TAB_INSTALLED:
+            self._refresh_list()
 
     def _filtered(self):
         kw = self.search_box.text().strip().lower()
@@ -164,7 +250,11 @@ class DownloadPage(QWidget):
 
     def _refresh_list(self):
         self.list.clear()
-        for v in self._filtered():
+        if self._version_type == _TAB_INSTALLED:
+            rows = self._local_items
+        else:
+            rows = self._filtered()
+        for v in rows:
             item = QListWidgetItem()
             item.setData(Qt.UserRole, v)
             row = self._make_row(v)
@@ -179,17 +269,59 @@ class DownloadPage(QWidget):
         h.setSpacing(10)
         name = QLabel(v["id"], objectName="cardTitle")
         h.addWidget(name)
-        tag = QLabel(_TYPE_NAMES.get(v.get("type"), ""), objectName="cardDesc")
-        h.addWidget(tag)
-        h.addStretch()
-        date = QLabel(str(v.get("releaseTime", ""))[:10], objectName="cardDesc")
-        h.addWidget(date)
+        if self._version_type == _TAB_INSTALLED:
+            if v.get("instance"):
+                tag = QLabel("整合包实例", objectName="cardDesc")
+                h.addWidget(tag)
+            h.addStretch()
+            size = QLabel(_fmt_size(v.get("size", 0)), objectName="cardDesc")
+            h.addWidget(size)
+        else:
+            tag = QLabel(_TYPE_NAMES.get(v.get("type"), ""), objectName="cardDesc")
+            h.addWidget(tag)
+            h.addStretch()
+            date = QLabel(str(v.get("releaseTime", ""))[:10], objectName="cardDesc")
+            h.addWidget(date)
         return w
 
     def _on_select(self):
         has = bool(self.list.selectedItems())
-        self.btn_download.setEnabled(has)
-        self.btn_loader.setEnabled(has and self._loader_worker is None)
+        installed = self._version_type == _TAB_INSTALLED
+        self.btn_download.setEnabled(has and not installed)
+        self.btn_loader.setEnabled(has and not installed
+                                   and self._loader_worker is None)
+        self.btn_delete.setEnabled(has and installed)
+
+    # ---------- 删除已装版本 ----------
+    def _delete_version(self):
+        items = self.list.selectedItems()
+        if not items or self._version_type != _TAB_INSTALLED:
+            return
+        v = items[0].data(Qt.UserRole)
+        vid = v["id"]
+        # 继承检查：有子版本依赖此版本时给出强警告
+        children = [i["id"] for i in self._local_items
+                    if i.get("inherits") == vid]
+        msg = f"确定删除版本 {vid} 吗？"
+        if children:
+            msg = (f"{vid} 被以下加载器版本继承：\n{', '.join(children)}\n"
+                   f"删除后这些版本将无法启动！\n\n仍要删除吗？")
+        if v.get("instance"):
+            head = (f"{vid} 是整合包实例，删除会连同其中的\n"
+                    f"存档、模组、配置一起删除！\n\n")
+            msg = head + (msg if children else f"确定删除吗？")
+        if QMessageBox.question(self, "删除版本", msg,
+                                QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.No) != QMessageBox.Yes:
+            return
+        target = Path(GAME_DIR) / "versions" / vid
+        self.btn_delete.setEnabled(False)
+        try:
+            shutil.rmtree(target)
+            self.status_label.setText(f"已删除 {vid}（释放 {_fmt_size(v.get('size', 0))}）")
+        except OSError as e:
+            self.status_label.setText(f"删除失败：{e}（游戏运行中或文件被占用？）")
+        self._scan_local()
 
     # ---------- 一键安装加载器 ----------
     def _install_loader(self):

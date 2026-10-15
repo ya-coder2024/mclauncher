@@ -54,6 +54,7 @@ class SettingsPage(QWidget):
         page.addWidget(self._make_resolution_card())
         page.addWidget(self._make_jvm_card())
         page.addWidget(self._make_isolation_card())
+        page.addWidget(self._make_maintain_card())
 
         # 保存
         save_row = QHBoxLayout()
@@ -170,6 +171,47 @@ class SettingsPage(QWidget):
         self.jvm_edit.setPlaceholderText("留空则不追加任何参数")
         v.addWidget(self.jvm_edit)
         return card
+
+    def _make_maintain_card(self):
+        card, v = self._card(
+            "维护",
+            "内存优化：把启动器和游戏进程占用的物理内存换出到页面文件，"
+            "立即释放 RAM（PCL 同款）。游戏运行中使用可能造成短暂卡顿")
+        row = QHBoxLayout()
+        self.btn_mem_opt = QPushButton("内存优化", objectName="small")
+        self.btn_mem_opt.setFixedHeight(30)
+        self.btn_mem_opt.clicked.connect(self._run_mem_optimize)
+        row.addWidget(self.btn_mem_opt)
+        self.mem_result = QLabel("", objectName="cardDesc")
+        row.addWidget(self.mem_result, 1)
+        v.addLayout(row)
+        return card
+
+    def _run_mem_optimize(self):
+        from core import mem_optimize
+        self.btn_mem_opt.setEnabled(False)
+        self.mem_result.setText("正在优化…")
+
+        class _T(QThread):
+            done_ = pyqtSignal(int, int)
+            def run(self_):
+                try:
+                    freed, count = mem_optimize.optimize()
+                except Exception:
+                    freed, count = -1, 0
+                self_.done_.emit(freed, count)
+
+        self._mem_thread = _T()
+        self._mem_thread.done_.connect(self._on_mem_done)
+        start_worker(self._mem_thread, parent=self)
+
+    def _on_mem_done(self, freed, count):
+        self.btn_mem_opt.setEnabled(True)
+        if freed < 0:
+            self.mem_result.setText("内存优化失败（需要管理员权限？）")
+            return
+        mb = freed / 1024 / 1024
+        self.mem_result.setText(f"已释放 {mb:.0f} MB 物理内存（{count} 个进程）")
 
     def _make_isolation_card(self):
         card, v = self._card(

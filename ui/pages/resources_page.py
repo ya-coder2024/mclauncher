@@ -4,6 +4,8 @@
 import os
 import shutil
 import subprocess
+import zipfile
+from datetime import datetime
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QUrl
@@ -66,6 +68,12 @@ class _ScanThread(QThread):
                 if self._kind == "saves":
                     if p.is_dir() and (p / "level.dat").is_file():
                         items.append((p.name, str(p), _fmt_size(_dir_size(p))))
+                elif self._kind == "backups":
+                    if p.is_file() and p.suffix.lower() == ".zip":
+                        ts = datetime.fromtimestamp(p.stat().st_mtime)
+                        items.append((p.name, str(p),
+                                      f"{_fmt_size(p.stat().st_size)} · "
+                                      f"{ts.strftime('%Y-%m-%d %H:%M')}"))
                 else:
                     # 资源包 / 光影：zip 文件或文件夹
                     if p.is_dir() or p.suffix.lower() == ".zip":
@@ -74,6 +82,43 @@ class _ScanThread(QThread):
         except OSError:
             pass
         self.done.emit(items)
+
+
+class _BackupThread(QThread):
+    """存档备份/恢复（后台执行，可能较慢）"""
+    done = pyqtSignal(str)   # 结果消息
+    failed = pyqtSignal(str)
+
+    def __init__(self, action, world_dir, saves_dir, backups_dir, zip_path=None):
+        super().__init__()
+        self._action = action
+        self._world = Path(world_dir) if world_dir else None
+        self._saves = Path(saves_dir)
+        self._backups = Path(backups_dir)
+        self._zip = Path(zip_path) if zip_path else None
+
+    def run(self):
+        try:
+            if self._action == "backup":
+                self._backups.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M")
+                dst = self._backups / f"{self._world.name}_{ts}.zip"
+                with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for p in self._world.rglob("*"):
+                        if p.is_file():
+                            zf.write(p, p.relative_to(self._saves))
+                self.done.emit(f"备份完成 → {dst.name}（{_fmt_size(dst.stat().st_size)}）")
+            else:  # restore
+                with zipfile.ZipFile(self._zip) as zf:
+                    # 从 zip 内首个条目解析世界文件夹名
+                    top = zf.namelist()[0].split("/")[0]
+                    world = self._saves / top
+                    if world.exists():
+                        shutil.rmtree(world)
+                    zf.extractall(self._saves)
+                self.done.emit(f"已恢复备份到 saves/{top}")
+        except (OSError, zipfile.BadZipFile, IndexError) as e:
+            self.failed.emit(f"{self._action}失败：{e}")
 
 
 class _ResourceTab(QWidget):
@@ -121,8 +166,136 @@ class _ResourceTab(QWidget):
             btn_delete.setFixedHeight(30)
             btn_delete.clicked.connect(self._delete_selected)
             bottom.addWidget(btn_delete)
+            self.btn_delete = btn_delete
+
+            # ---- 备份相关（仅存档标签）----
+            self._mode = "worlds"
+            self._bak_worker = None
+            self.btn_backup = QPushButton("备份存档", objectName="small")
+            self.btn_backup.setFixedHeight(30)
+            self.btn_backup.clicked.connect(self._backup_selected)
+            bottom.addWidget(self.btn_backup)
+
+            self.btn_restore = QPushButton("恢复备份", objectName="small")
+            self.btn_restore.setFixedHeight(30)
+            self.btn_restore.clicked.connect(self._restore_selected)
+            self.btn_restore.hide()
+            bottom.addWidget(self.btn_restore)
+
+            self.btn_del_bak = QPushButton("删除备份", objectName="small")
+            self.btn_del_bak.setFixedHeight(30)
+            self.btn_del_bak.clicked.connect(self._delete_backup)
+            self.btn_del_bak.hide()
+            bottom.addWidget(self.btn_del_bak)
+
+            self.btn_manage = QPushButton("备份管理", objectName="small")
+            self.btn_manage.setFixedHeight(30)
+            self.btn_manage.setCheckable(True)
+            self.btn_manage.clicked.connect(self._toggle_mode)
+            bottom.addWidget(self.btn_manage)
 
         root.addLayout(bottom)
+
+    # ---------- 备份模式切换 ----------
+    def _current_dir(self):
+        if self._kind == "saves" and self._mode == "backups":
+            return self._base / "backups"
+        return self._base / self._kind
+
+    def _tip_line(self):
+        if self._kind == "saves":
+            if self._mode == "backups":
+                return "存档备份（zip）。恢复会覆盖当前的同名存档！"
+            return "世界存档。删除操作不可恢复，请谨慎！"
+        return {
+            "resourcepacks": "资源包（纹理/音效等），放入后请在游戏内「选项 → 资源包」中启用。",
+            "shaderpacks": "光影包（需安装 OptiFine 或 Iris 加载），放入后请在游戏内选择。",
+        }[self._kind]
+
+    def _update_tip(self):
+        self.tip.setText(f"{self._tip_line()}\n目录：{self._current_dir()}")
+
+    def _toggle_mode(self):
+        self._mode = "backups" if self._mode == "worlds" else "worlds"
+        in_bak = self._mode == "backups"
+        self.btn_backup.setVisible(not in_bak)
+        self.btn_delete.setVisible(not in_bak)
+        self.btn_restore.setVisible(in_bak)
+        self.btn_del_bak.setVisible(in_bak)
+        self._update_tip()
+        self.refresh()
+
+    # ---------- 备份 / 恢复 / 删除备份 ----------
+    def _backup_selected(self):
+        it = self.list.currentItem()
+        if not it:
+            self.status_label.setText("请先在列表中选中一个存档")
+            return
+        if self._bak_worker is not None:
+            return
+        self.status_label.setText("正在备份（大世界可能需要一会儿）…")
+        self._bak_worker = _BackupThread(
+            "backup", it.data(Qt.UserRole),
+            self._base / "saves", self._base / "backups")
+        self._bak_worker.done.connect(self._on_bak_done)
+        self._bak_worker.failed.connect(self._on_bak_fail)
+        start_worker(self._bak_worker, parent=self)
+
+    def _restore_selected(self):
+        it = self.list.currentItem()
+        if not it:
+            self.status_label.setText("请先在列表中选中一份备份")
+            return
+        if self._bak_worker is not None:
+            return
+        zip_path = it.data(Qt.UserRole)
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                world = zf.namelist()[0].split("/")[0]
+        except (OSError, zipfile.BadZipFile, IndexError):
+            self.status_label.setText("备份文件损坏，无法恢复")
+            return
+        if (self._base / "saves" / world).exists():
+            ret = QMessageBox.warning(
+                self, "恢复备份",
+                f"当前已存在存档「{world}」，恢复将覆盖它！\n确定继续吗？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if ret != QMessageBox.Yes:
+                return
+        self.status_label.setText(f"正在恢复 {world} …")
+        self._bak_worker = _BackupThread(
+            "restore", None, self._base / "saves", self._base / "backups",
+            zip_path=zip_path)
+        self._bak_worker.done.connect(self._on_bak_done)
+        self._bak_worker.failed.connect(self._on_bak_fail)
+        start_worker(self._bak_worker, parent=self)
+
+    def _delete_backup(self):
+        it = self.list.currentItem()
+        if not it:
+            self.status_label.setText("请先在列表中选中一份备份")
+            return
+        path = it.data(Qt.UserRole)
+        ret = QMessageBox.warning(
+            self, "删除备份", f"确定删除备份「{Path(path).name}」吗？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ret != QMessageBox.Yes:
+            return
+        try:
+            os.remove(path)
+        except OSError as e:
+            self.status_label.setText(f"删除失败：{e}")
+            return
+        self.refresh()
+
+    def _on_bak_done(self, msg):
+        self._bak_worker = None
+        self.status_label.setText(msg)
+        self.refresh()
+
+    def _on_bak_fail(self, err):
+        self._bak_worker = None
+        self.status_label.setText(err)
 
     def set_target(self, base_dir):
         """切换管理位置（全局目录或版本隔离目录）"""
@@ -130,15 +303,16 @@ class _ResourceTab(QWidget):
         if new_base == self._base:
             return
         self._base = new_base
-        self.tip.setText(self.tip.text().split("\n")[0]
-                         + f"\n目录：{self._base / self._kind}")
+        self._update_tip()
         self.refresh()
 
     def refresh(self):
         if self._scan is not None:
             return
+        in_bak = self._kind == "saves" and self._mode == "backups"
         self.status_label.setText("正在扫描…")
-        self._scan = _ScanThread(self._base / self._kind, self._kind)
+        self._scan = _ScanThread(self._current_dir(),
+                                 "backups" if in_bak else self._kind)
         self._scan.done.connect(self._on_scanned)
         start_worker(self._scan, parent=self)
 

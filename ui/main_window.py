@@ -2,6 +2,7 @@
 """主窗口：无边框窗口 + 自绘标题栏 + PCL 风格侧边栏 + 页面堆叠"""
 
 import sys
+import zipfile
 from pathlib import Path
 
 from PyQt5.QtCore import QSize, Qt, QPoint, QTimer
@@ -12,8 +13,10 @@ from PyQt5.QtWidgets import (
 )
 
 from ui import theme
+from core import modpack
 from core.config import APP_VERSION
 from core import updater
+from core.download_queue import DownloadQueue, LocalPackTask, TaskState
 from core.safe_thread import start_worker
 from ui.pages.home_page import HomePage
 from ui.pages.download_page import DownloadPage
@@ -167,6 +170,7 @@ class MainWindow(QMainWindow):
         packs_page = next(self.pages.widget(i) for i in range(self.pages.count())
                           if isinstance(self.pages.widget(i), PacksPage))
         packs_page.installed_changed.connect(home_page.refresh_versions)
+        self.packs_page = packs_page  # 本地整合包安装完成后复用其刷新信号
         # 日志页：接收主页转发的游戏日志与崩溃分析
         log_page = next(self.pages.widget(i) for i in range(self.pages.count())
                         if isinstance(self.pages.widget(i), LogPage))
@@ -191,11 +195,69 @@ class MainWindow(QMainWindow):
 
         self.nav_buttons[0].setChecked(True)
 
+        # 支持把整合包文件（.mrpack / CurseForge .zip）拖进窗口直接安装
+        self.setAcceptDrops(True)
+
         # ---- 自动检查更新（仅打包版；启动 4 秒后后台查询，失败静默） ----
         self._update_check = None
         self._update_download = None
         if updater.is_packaged():
             QTimer.singleShot(4000, self._check_update)
+
+    # ---------- 拖拽安装整合包 ----------
+    _PACK_SUFFIXES = {".mrpack", ".zip"}
+
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls():
+            urls = e.mimeData().urls()
+            if (len(urls) == 1
+                    and Path(urls[0].toLocalFile()).suffix.lower() in self._PACK_SUFFIXES):
+                e.acceptProposedAction()
+                return
+        e.ignore()
+
+    def dropEvent(self, e):
+        path = Path(e.mimeData().urls()[0].toLocalFile())
+        e.acceptProposedAction()
+        self.import_local_pack(path)
+
+    def import_local_pack(self, path):
+        """安装本地整合包（拖拽 / 整合包页「从本地导入」共用入口）"""
+        path = Path(path)
+        if not path.is_file():
+            QMessageBox.warning(self, "导入失败", f"文件不存在：{path}")
+            return
+        try:
+            meta = modpack.read_meta(path)
+        except modpack.ModpackError as e:
+            QMessageBox.warning(self, "无法导入", str(e))
+            return
+        title = meta["name"] + (f" {meta['version']}" if meta["version"] else "")
+        ret = QMessageBox.question(
+            self, "安装整合包",
+            f"检测到整合包：{title}\n\n"
+            f"Minecraft：{meta['mc']}\n"
+            f"加载器：{meta['loader_label']}\n"
+            f"文件：{meta['files_count']} 个\n\n"
+            "将安装为独立实例（版本隔离，不影响其它版本），是否开始安装？")
+        if ret != QMessageBox.Yes:
+            return
+        task = DownloadQueue.instance().add(LocalPackTask(path))
+        task.finished.connect(lambda t=task: self._on_local_pack_finished(t))
+        tasks_idx = next(i for i in range(self.pages.count())
+                         if isinstance(self.pages.widget(i), TasksPage))
+        self.switch_page(tasks_idx)
+
+    def _on_local_pack_finished(self, task):
+        if task.state == TaskState.DONE:
+            self.packs_page.installed_changed.emit()  # 主页版本列表自动刷新
+            QMessageBox.information(
+                self, "整合包安装完成",
+                f"{task.name} 已安装为版本 {task.instance or '?'}（版本隔离），"
+                "已切到主页，选择该版本即可启动")
+            self.switch_page(0)
+        elif task.state == TaskState.FAILED:
+            QMessageBox.warning(self, "整合包安装失败", task.error or "未知错误")
 
     def _check_update(self):
         if self._update_check is not None:

@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import tempfile
+import zipfile
 from pathlib import Path
 
 import requests
@@ -18,8 +19,8 @@ import requests
 from core.version_manifest import fetch_manifest
 from core.java_finder import pick_java
 from core.java_runtime import runtime_java, ensure_runtime
-from core.downloader import download_file
-from core.launcher import merge_libraries
+from core.downloader import download_file, file_ok
+from core.launcher import ensure_client, merge_libraries, _maven_artifact
 
 TIMEOUT = 30
 BMCLAPI = "https://bmclapi2.bangbang93.com"
@@ -275,6 +276,86 @@ def _ensure_launcher_profiles(game_dir):
                      encoding="utf-8")
 
 
+def _prepare_vanilla(game_dir, base_json, mc_version, say):
+    """预置原版 client.jar 与 launcher_profiles 条目。
+
+    Forge/NeoForge 安装器在 --installClient 时会先找本地原版：
+    launcher_profiles.json 中存在指向 mc_version 的 profile 且
+    versions/<mc>/<mc>.jar 存在，则直接复用、跳过 Mojang CDN 下载
+    （国内直连 piston-data 常握手超时导致安装失败，exit 1）。
+    """
+    say(f"正在准备原版 {mc_version} 的 client.jar（已存在则跳过）…")
+    ensure_client(base_json, game_dir, mc_version)
+
+    p = Path(game_dir) / "launcher_profiles.json"
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        data = {}
+    profiles = data.setdefault("profiles", {})
+    has = any(mc_version in (pr.get("lastVersionId"), pr.get("name"))
+              for pr in profiles.values() if isinstance(pr, dict))
+    if not has:
+        import uuid as _uuid
+        profiles[_uuid.uuid4().hex] = {
+            "name": mc_version,
+            "lastVersionId": mc_version,
+            "type": "latest-release",
+        }
+        data.setdefault("settings", {})
+        data["version"] = data.get("version", 3)
+        try:
+            p.write_text(json.dumps(data), encoding="utf-8")
+        except OSError:
+            pass  # profiles 写失败不阻断安装，安装器会退回自行下载
+
+
+def _prefetch_installer_libs(installer, game_dir, say):
+    """从安装器内 install_profile.json 提取 libraries.minecraft.net 源的库，
+    经 BMCLAPI 镜像预下载到 libraries/。
+
+    安装器对已存在文件会跳过下载；MoJang 库 CDN（libraries.minecraft.net）
+    国内直连常握手超时，是 Forge/NeoForge 安装失败的主要原因。
+    其余源（creeperhost / forge maven）安装器可自行下载，不做预取。
+    """
+    try:
+        with zipfile.ZipFile(installer) as z:
+            profile = json.loads(z.read("install_profile.json").decode("utf-8"))
+    except (KeyError, zipfile.BadZipFile, ValueError, OSError):
+        return  # 读不到 profile 就让安装器自行下载
+    lib_root = Path(game_dir) / "libraries"
+    todo = []
+    for lib in profile.get("libraries") or []:
+        url = (lib.get("url") or "").rstrip("/")
+        if "libraries.minecraft.net" not in url:
+            continue
+        rel, _fname = _maven_artifact(lib.get("name", ""))
+        if not rel:
+            continue
+        sha1 = next(iter(lib.get("checksums") or []), None)
+        dest = lib_root / rel
+        if file_ok(dest, sha1):
+            continue
+        todo.append((dest, sha1, f"{url}/{rel}"))
+    if not todo:
+        return
+    say(f"预下载 {len(todo)} 个库文件（镜像加速）…")
+    from core.downloader import mirror_url
+    maven_central = "https://repo1.maven.org/maven2/"
+    failed = []
+    for dest, sha1, url in todo:
+        try:
+            central = maven_central + url[len("https://libraries.minecraft.net/"):]
+            download_file(mirror_url(url), dest, sha1=sha1, timeout=60,
+                          retries=2, fallback_url=central)
+        except Exception:
+            failed.append(dest.name)
+    if failed:
+        say(f"提示：{len(failed)} 个库预下载失败，交给安装器自行尝试（{failed[0]} 等）")
+
+
 def _ascii_target(game_dir):
     """Java 8 版 Forge 安装器无法处理中文路径。路径含非 ASCII 字符时，
     在系统临时目录建一个全 ASCII 的 junction 指向游戏目录。
@@ -371,7 +452,9 @@ def install_forge(game_dir, mc_version, loader_version=None, status_cb=None):
         except Exception as e:
             raise LoaderError(f"安装器下载失败：{e}")
 
+        _prefetch_installer_libs(installer, game_dir, say)
         _ensure_launcher_profiles(game_dir)
+        _prepare_vanilla(game_dir, base_json, mc_version, say)
         target, link = _ascii_target(game_dir)
         java_exe = _resolve_java(game_dir, base_json, say)
         say("正在静默安装（安装器需下载较多文件，请耐心等待）…")
@@ -426,6 +509,9 @@ def install_neoforge(game_dir, mc_version, loader_version=None, status_cb=None):
         except Exception as e:
             raise LoaderError(f"安装器下载失败：{e}")
 
+        _prefetch_installer_libs(installer, game_dir, say)
+        _ensure_launcher_profiles(game_dir)
+        _prepare_vanilla(game_dir, base_json, mc_version, say)
         target, link = _ascii_target(game_dir)
         java_exe = _resolve_java(game_dir, base_json, say)
         say("正在静默安装（安装器需下载较多文件，请耐心等待）…")

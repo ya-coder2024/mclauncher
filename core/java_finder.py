@@ -4,6 +4,7 @@
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 _VERSION_RE = re.compile(r'version "(\d+)(?:\.(\d+))?[."0-9]*')
@@ -28,7 +29,8 @@ def probe_java(java_exe):
     try:
         r = subprocess.run(
             [str(java_exe), "-version"],
-            capture_output=True, timeout=15, creationflags=0x08000000,  # CREATE_NO_WINDOW
+            capture_output=True, timeout=15, text=True,
+            creationflags=0x08000000,  # CREATE_NO_WINDOW
         )
         text = (r.stderr or "") + (r.stdout or "")
         m = _VERSION_RE.search(text)
@@ -77,13 +79,23 @@ def _collect_exes():
                 add(child / "bin" / "java.exe")
 
     # 官方启动器 / PCL 下载的运行时（.minecraft/runtime 任意深度）
-    base = Path.home() / "AppData" / "Roaming" / ".minecraft"
-    if base.is_dir():
-        try:
-            for exe in base.rglob("java.exe"):
-                add(exe)
-        except OSError:
-            pass
+    # 覆盖两处：系统默认 %APPDATA%\.minecraft 与启动器自身 GAME_DIR
+    try:
+        from core.config import GAME_DIR
+    except ImportError:  # 直接以脚本方式运行本文件时补上项目根路径
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from core.config import GAME_DIR
+    bases = [
+        Path.home() / "AppData" / "Roaming" / ".minecraft",
+        Path(GAME_DIR),
+    ]
+    for base in bases:
+        if base.is_dir():
+            try:
+                for exe in base.rglob("java.exe"):
+                    add(exe)
+            except OSError:
+                pass
     return exes
 
 

@@ -5,6 +5,7 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QListWidget, QListWidgetItem, QProgressBar, QFrame, QComboBox,
+    QFileDialog,
 )
 
 from core import mod_repo
@@ -95,6 +96,9 @@ class PacksPage(QWidget):
         self.ver_combo.setFixedWidth(240)
         self.ver_combo.hide()
         bottom.addWidget(self.ver_combo)
+        self.btn_import = QPushButton("从本地导入", objectName="small")
+        self.btn_import.clicked.connect(self._import_local)
+        bottom.addWidget(self.btn_import)
         self.btn_install = QPushButton("安装所选整合包", objectName="small")
         self.btn_install.setEnabled(False)
         self.btn_install.clicked.connect(self._install_selected)
@@ -105,6 +109,14 @@ class PacksPage(QWidget):
 
         # 启动时展示热门整合包
         self._search()
+
+    def _import_local(self):
+        """选择本地整合包文件，交给主窗口统一安装流程"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择整合包文件", "",
+            "整合包 (*.mrpack *.zip);;Modrinth 整合包 (*.mrpack);;所有文件 (*)")
+        if path:
+            self.window().import_local_pack(path)
 
     # ---------- 搜索 ----------
     def _search(self):

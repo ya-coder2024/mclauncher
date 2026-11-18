@@ -410,20 +410,24 @@ def offline_uuid(name):
 # ---------- 命令组装 ----------
 
 def build_command(data, game_dir, vid, java_exe, classpath, account=None, memory="2G",
-                  width=None, height=None, jvm_args=None, run_dir=None):
+                  width=None, height=None, jvm_args=None, run_dir=None,
+                  user_type=None, extra_jvm=None):
     """组装启动命令。account：来自 core.auth 的账号字典。
 
     width/height：窗口分辨率，非空时强制追加 --width/--height（覆盖 json 默认值）。
     jvm_args：额外 JVM 参数字符串，追加在内存参数之后。
     run_dir：游戏工作目录（版本隔离时为版本目录），决定 --gameDir 与存档/配置位置。
+    user_type：覆盖 --userType（外置登录走 authlib-injector 时需要 mojang）。
+    extra_jvm：逐项追加的 JVM 参数列表（如 -javaagent，避免路径含空格被拆碎）。
     """
     account = account or {"type": "offline", "name": "Player",
                           "uuid": offline_uuid("Player"), "access_token": "0"}
     username = account["name"]
     player_uuid = account["uuid"]
     access_token = account["access_token"]
-    # 现代版本统一用 msa；离线保持 legacy
-    user_type = "legacy" if account["type"] == "offline" else "msa"
+    # 现代版本统一用 msa；离线保持 legacy；外置登录由 authlib-injector 接管时为 mojang
+    if not user_type:
+        user_type = "legacy" if account["type"] == "offline" else "msa"
 
     run_dir = Path(run_dir) if run_dir else Path(game_dir)
     natives_dir = Path(game_dir) / "versions" / vid / "natives"
@@ -465,6 +469,8 @@ def build_command(data, game_dir, vid, java_exe, classpath, account=None, memory
     cmd = [java_exe, f"-Xmx{memory}", f"-Xms{memory}"]
     if jvm_args:
         cmd.extend(jvm_args.split())  # 用户追加的 JVM 参数（空格分隔）
+    if extra_jvm:
+        cmd.extend(extra_jvm)  # 内部注入参数（-javaagent 等），逐项加入不被拆分
     args = data.get("arguments")
 
     # 自定义分辨率：现代版本 json 自带 --width/--height，直接改值；
@@ -542,6 +548,19 @@ def launch(game_dir, vid, account=None, use_mirror=True, java_path=None,
     if account["type"] != "offline":
         account = auth_mod.prepare_account(account)
 
+    # 外置登录（LittleSkin 等皮肤站）：注入 authlib-injector，游戏内才有皮肤/正版验证
+    extra_jvm, forced_type = [], None
+    api_root = account.get("api_root") or ""
+    if account["type"] == "yggdrasil" and api_root:
+        from core.authlib_injector import ensure_injector, jvm_agent_args, InjectorError
+        try:
+            jar = ensure_injector(game_dir, cancel=cancel, status_cb=say)
+            extra_jvm = jvm_agent_args(jar, api_root)
+            forced_type = "mojang"
+            say(f"外置登录已就绪：{api_root}")
+        except InjectorError as e:
+            say(f"皮肤组件下载失败，将不带皮肤启动：{e}")
+
     # 版本 json 缺失时自动从清单获取
     json_path = vdir / f"{vid}.json"
     if not json_path.is_file():
@@ -600,7 +619,8 @@ def launch(game_dir, vid, account=None, use_mirror=True, java_path=None,
 
     cmd = build_command(data, game_dir, vid, java_exe, cp, account, memory,
                         width=width, height=height, jvm_args=jvm_args,
-                        run_dir=run_dir)
+                        run_dir=run_dir, user_type=forced_type,
+                        extra_jvm=extra_jvm)
     say("正在启动游戏…" + ("（版本隔离已开启）" if isolate else ""))
     log = open(vdir / "launcher-log.txt", "ab")
     proc = subprocess.Popen(cmd, cwd=str(run_dir), stdout=log, stderr=subprocess.STDOUT)

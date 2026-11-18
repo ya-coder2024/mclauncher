@@ -216,6 +216,29 @@ class PackInstallTask(DownloadTask):
         )
 
 
+class LocalPackTask(DownloadTask):
+    """安装本地整合包文件（.mrpack / CurseForge .zip），拖拽或本地导入入口"""
+
+    def __init__(self, pack_path):
+        p = Path(pack_path)
+        super().__init__("pack", p.stem)
+        self.pack_path = str(p)
+        self.instance = None
+
+    def _do_run(self):
+        self._status = "安装中"
+        p = Path(self.pack_path)
+        installer = (modpack.install_mrpack if p.suffix.lower() == ".mrpack"
+                     else modpack.install_cf_zip)
+        self.instance = installer(
+            p, GAME_DIR,
+            progress_cb=lambda v: (setattr(self, "progress", v),
+                                   self.updated.emit()),
+            cancel=self._is_canceled,
+            paused=self._is_paused,
+        )
+
+
 class _QueueWorker(QThread):
     """顺序执行队列中的任务（一次一个，避免抢带宽）"""
 
